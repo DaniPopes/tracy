@@ -77,12 +77,6 @@ static Args parse_args(int argc, char** argv)
     return args;
 }
 
-static const char* get_name(int32_t id, const tracy::Worker& worker)
-{
-    auto& srcloc = worker.GetSourceLocation(id);
-    return worker.GetString(srcloc.name.active ? srcloc.name : srcloc.function);
-}
-
 class StringTable
 {
 public:
@@ -111,15 +105,12 @@ private:
     std::unordered_map<std::string, uint32_t> m_map;
 };
 
-struct ThreadData
+struct MarkerData
 {
-    uint64_t tid = 0;
-    std::string name;
-    std::vector<std::tuple<const char*, int64_t, int64_t>> markers; // name, startNs, endNs
-    int64_t minTime = INT64_MAX;
-    int64_t maxTime = 0;
+    const char* name;
+    int64_t startNs;
+    int64_t endNs;
 };
-
 
 enum class MarkerPhase {
     Instant = 0,
@@ -131,6 +122,62 @@ enum class MarkerPhase {
 static double ns_to_ms(int64_t ns)
 {
     return static_cast<double>(ns) / 1e6;
+}
+
+static void collect_zone(
+    const tracy::Worker& worker,
+    const tracy::ZoneEvent& zone,
+    std::vector<MarkerData>& markers,
+    int64_t& minTime,
+    int64_t& maxTime);
+
+static void collect_zones_recursive(
+    const tracy::Worker& worker,
+    const tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>>& zones,
+    std::vector<MarkerData>& markers,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    if (zones.is_magic())
+    {
+        auto& vec = *(tracy::Vector<tracy::ZoneEvent>*)&zones;
+        for (auto& zone : vec)
+        {
+            collect_zone(worker, zone, markers, minTime, maxTime);
+        }
+    }
+    else
+    {
+        for (auto& zonePtr : zones)
+        {
+            if (!zonePtr) continue;
+            collect_zone(worker, *zonePtr, markers, minTime, maxTime);
+        }
+    }
+}
+
+static void collect_zone(
+    const tracy::Worker& worker,
+    const tracy::ZoneEvent& zone,
+    std::vector<MarkerData>& markers,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    if (!zone.IsEndValid()) return;
+
+    const char* name = worker.GetZoneName(zone);
+    int64_t start = zone.Start();
+    int64_t end = zone.End();
+
+    markers.push_back({ name, start, end });
+    minTime = std::min(minTime, start);
+    maxTime = std::max(maxTime, end);
+
+    if (zone.HasChildren())
+    {
+        auto& children = worker.GetZoneChildren(zone.Child());
+        collect_zones_recursive(worker, children, markers, minTime, maxTime);
+    }
 }
 
 int main(int argc, char** argv)
@@ -159,48 +206,12 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    StringTable st;
-
-    std::unordered_map<uint64_t, ThreadData> threads;
-
-    auto& slz = worker.GetSourceLocationZones();
-    for (auto it = slz.begin(); it != slz.end(); ++it)
-    {
-        const auto srclocId = it->first;
-        const auto& zoneData = it->second;
-        const char* zoneName = get_name(srclocId, worker);
-
-        for (const auto& ztd : zoneData.zones)
-        {
-            auto* zone = ztd.Zone();
-            if (!zone->IsEndValid()) continue;
-
-            uint16_t tCompressed = ztd.Thread();
-            uint64_t tFull = worker.DecompressThread(tCompressed);
-
-            auto& td = threads[tFull];
-            if (td.tid == 0)
-            {
-                td.tid = tFull;
-                const char* tname = worker.GetThreadName(tFull);
-                td.name = tname ? tname : "Thread";
-            }
-
-            int64_t start = zone->Start();
-            int64_t end = zone->End();
-
-            td.markers.emplace_back(zoneName, start, end);
-            td.minTime = std::min(td.minTime, start);
-            td.maxTime = std::max(td.maxTime, end);
-        }
-    }
-
     json profile;
+    StringTable st;
 
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
     const std::string& hostInfo = worker.GetHostInfo();
-    uint64_t captureTime = worker.GetCaptureTime();
     uint64_t userCategory = 1;
     profile["meta"] = {
         {"categories", json::array({
@@ -212,12 +223,12 @@ int main(int argc, char** argv)
         {"interval", ns_to_ms(worker.GetSamplingPeriod())},
         {"markerSchema", json::array({
             {
-                {"name", "SimpleMarker"},
+                {"name", "TracyZone"},
                 {"display", json::array({"marker-chart", "marker-table"})},
                 {"chartLabel", "{marker.data.name}"},
                 {"tooltipLabel", "{marker.data.name}"},
                 {"tableLabel", "{marker.data.name}"},
-                {"description", "Emitted for marker spans in a markers text file."},
+                // {"description", "Emitted for marker spans in a markers text file."},
                 {"fields", json::array({
                     {
                         {"key", "name"}, {"label", "Name"}, {"format", "unique-string"}
@@ -252,21 +263,37 @@ int main(int argc, char** argv)
     profile["libs"] = json::array();
 
     profile["threads"] = json::array();
-    for (auto& kv : threads)
+
+    for (const auto* td : worker.GetThreadData())
     {
-        auto& td = kv.second;
+        if (!td) continue;
+
+        std::vector<MarkerData> marker_data;
+        int64_t minTime = INT64_MAX;
+        int64_t maxTime = 0;
+
+        collect_zones_recursive(worker, td->timeline, marker_data, minTime, maxTime);
+
+        if (marker_data.empty())
+        {
+            minTime = 0;
+            maxTime = 0;
+        }
+
+        const char* threadName = worker.GetThreadName(td->id);
 
         auto& thread = profile["threads"].emplace_back();
-        thread["name"] = td.name;
+        thread["name"] = threadName ? threadName : "Thread";
         thread["isMainThread"] = false;
         thread["processType"] = "default";
         thread["processName"] = captureProgram.empty() ? "Tracy" : captureProgram;
         thread["processStartupTime"] = 0.0;
         thread["processShutdownTime"] = nullptr;
-        thread["registerTime"] = ns_to_ms(td.minTime);
-        thread["unregisterTime"] = nullptr;
-        thread["pid"] = std::to_string(worker.GetPidFromTid(td.tid));
-        thread["tid"] = td.tid;
+        thread["registerTime"] = ns_to_ms(minTime);
+        thread["unregisterTime"] = ns_to_ms(maxTime);
+        auto pid = worker.GetPidFromTid(td->id);
+        thread["pid"] = std::to_string(pid != 0 ? pid : worker.GetPid());
+        thread["tid"] = td->id;
 
         thread["frameTable"] = {
             {"length", 0},
@@ -292,18 +319,29 @@ int main(int argc, char** argv)
             {"columnNumber", json::array()}
         };
 
+        thread["markers"] = {
+            {"length", marker_data.size()},
+            {"category", json::array()},
+            {"data", json::array()},
+            {"endTime", json::array()},
+            {"name", json::array()},
+            {"phase", json::array()},
+            {"startTime", json::array()}
+        };
         auto& markers = thread["markers"];
-        markers["length"] = td.markers.size();
-        for (auto& m : td.markers) {
+        auto markerType = "TracyZone";
+        uint32_t markerTypeIdx = st.intern(markerType);
+        for (const auto& m : marker_data)
+        {
             markers["category"].push_back(userCategory);
             markers["data"].push_back({
-                {"type", "SimpleMarker"},
-                {"name", st.intern(std::get<0>(m))}
+                {"type", markerType},
+                {"name", st.intern(m.name)}
             });
-            markers["name"].push_back(st.intern("SimpleMarker"));
-            markers["startTime"].push_back(ns_to_ms(std::get<1>(m)));
-            markers["endTime"].push_back(ns_to_ms(std::get<2>(m)));
-            markers["phase"].push_back(MarkerPhase::Interval);
+            markers["name"].push_back(markerTypeIdx);
+            markers["startTime"].push_back(ns_to_ms(m.startNs));
+            markers["endTime"].push_back(ns_to_ms(m.endNs));
+            markers["phase"].push_back(static_cast<int>(MarkerPhase::Interval));
         }
 
         thread["nativeSymbols"] = {
@@ -340,7 +378,6 @@ int main(int argc, char** argv)
 
     profile["shared"]["stringArray"] = st.to_json();
 
-    // Output
     FILE* out = args.output ? fopen(args.output, "wb") : stdout;
     if (!out)
     {

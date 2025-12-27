@@ -8,6 +8,13 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/version.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 
+set(CMAKE_CXX_FLAGS_DEBUG
+    "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer -g")
+set(CMAKE_C_FLAGS_DEBUG
+    "${CMAKE_C_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer -g")
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG
+    "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+
 project(
     tracy-fxexport
     LANGUAGES C CXX
@@ -23,7 +30,7 @@ set(PROGRAM_FILES
 )
 
 add_executable(${PROJECT_NAME} ${PROGRAM_FILES} ${COMMON_FILES} ${SERVER_FILES})
-target_link_libraries(${PROJECT_NAME} PRIVATE TracyServer TracyGetOpt nlohmann_json::nlohmann_json)
+target_link_libraries(${PROJECT_NAME} PRIVATE TracyServer TracyGetOpt nlohmann_json::nlohmann_json tbb)
 set_property(DIRECTORY ${CMAKE_CURRENT_LIST_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
