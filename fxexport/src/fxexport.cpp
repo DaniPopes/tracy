@@ -83,18 +83,6 @@ static const char* get_name(int32_t id, const tracy::Worker& worker)
     return worker.GetString(srcloc.name.active ? srcloc.name : srcloc.function);
 }
 
-static const char* cpu_arch_string(tracy::CpuArchitecture arch)
-{
-    switch (arch)
-    {
-    case tracy::CpuArchX86: return "x86";
-    case tracy::CpuArchX64: return "x86_64";
-    case tracy::CpuArchArm32: return "arm";
-    case tracy::CpuArchArm64: return "aarch64";
-    default: return "";
-    }
-}
-
 class StringTable
 {
 public:
@@ -132,6 +120,14 @@ struct ThreadData
     int64_t maxTime = 0;
 };
 
+
+enum class MarkerPhase {
+    Instant = 0,
+    Interval = 1,
+    IntervalStart = 2,
+    IntervalEnd = 3,
+};
+
 static double ns_to_ms(int64_t ns)
 {
     return static_cast<double>(ns) / 1e6;
@@ -162,6 +158,8 @@ int main(int argc, char** argv)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    StringTable st;
 
     std::unordered_map<uint64_t, ThreadData> threads;
 
@@ -197,58 +195,68 @@ int main(int argc, char** argv)
         }
     }
 
-    // Build JSON
     json profile;
 
-    // meta
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
     const std::string& hostInfo = worker.GetHostInfo();
-    const char* cpuArch = cpu_arch_string(worker.GetCpuArch());
-    const char* cpuManufacturer = worker.GetCpuManufacturer();
-
+    uint64_t captureTime = worker.GetCaptureTime();
+    uint64_t userCategory = 1;
     profile["meta"] = {
-        {"version", 28},
-        {"interval", 1.0},
-        {"startTime", 0.0},
+        {"categories", json::array({
+            {{"name", "Other"}, {"color", "grey"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "User"}, {"color", "yellow"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "Kernel"}, {"color", "orange"}, {"subcategories", json::array({"Other"})}}
+        })},
+        {"debug", false},
+        {"interval", ns_to_ms(worker.GetSamplingPeriod())},
+        {"markerSchema", json::array({
+            {
+                {"name", "SimpleMarker"},
+                {"display", json::array({"marker-chart", "marker-table"})},
+                {"chartLabel", "{marker.data.name}"},
+                {"tooltipLabel", "{marker.data.name}"},
+                {"tableLabel", "{marker.data.name}"},
+                {"description", "Emitted for marker spans in a markers text file."},
+                {"fields", json::array({
+                    {
+                        {"key", "name"}, {"label", "Name"}, {"format", "unique-string"}
+                    }
+                })}
+            }
+        })},
+        {"pausedRanges", json::array()},
+        {"platform", hostInfo},
+        {"preprocessedProfileVersion", 57},
         {"processType", 0},
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
-        {"stackwalk", 0},
-        {"debug", 0},
-        {"platform", hostInfo},
-        {"oscpu", cpuArch},
-        {"misc", cpuManufacturer ? cpuManufacturer : ""},
-        {"abi", cpuArch},
-        {"toolkit", ""},
-        {"categories", json::array({
-            {{"name", "Tracy"}, {"color", "#0074D9"}, {"subcategories", json::array({"Zone"})}}
-        })},
-        {"markerSchema", json::array()},
+        {"startTime", worker.GetCaptureTime() * 1000},
+        {"startTimeAsClockMonotonicNanosecondsSinceBoot", 0}, // TODO: platform specific
+        {"symbolicated", false}, // TODO
+        {"version", 28},
         {"sampleUnits", {
             {"time", "ms"},
             {"eventDelay", "ms"},
             {"threadCPUDelta", "µs"}
-        }}
-    };
+        }},
 
+        {"usesOnlyOneStackType", true},
+        {"sourceCodeIsNotOnSearchfox", true}
+    };
     if (!captureName.empty())
     {
         profile["meta"]["importedFrom"] = captureName;
     }
 
-    // libs (empty)
+    // TODO
     profile["libs"] = json::array();
 
-    // threads
     profile["threads"] = json::array();
     for (auto& kv : threads)
     {
         auto& td = kv.second;
-        if (td.markers.empty()) continue;
 
-        StringTable stringTable;
-
-        json thread;
+        auto& thread = profile["threads"].emplace_back();
         thread["name"] = td.name;
         thread["isMainThread"] = false;
         thread["processType"] = "default";
@@ -257,60 +265,80 @@ int main(int argc, char** argv)
         thread["processShutdownTime"] = nullptr;
         thread["registerTime"] = ns_to_ms(td.minTime);
         thread["unregisterTime"] = nullptr;
-        thread["pid"] = std::to_string(worker.GetPid());
+        thread["pid"] = std::to_string(worker.GetPidFromTid(td.tid));
         thread["tid"] = td.tid;
 
-        // samples (minimal)
-        thread["samples"] = {
-            {"schema", {{"stack", 0}, {"time", 1}, {"responsiveness", 2}}},
-            {"data", json::array({
-                json::array({nullptr, ns_to_ms(td.minTime), 0.0}),
-                json::array({nullptr, ns_to_ms(td.maxTime), 0.0})
-            })}
-        };
-
-        // markers - intern on demand
-        json markersData = json::array();
-        for (auto& m : td.markers)
-        {
-            uint32_t nameIdx = stringTable.intern(std::get<0>(m));
-            markersData.push_back(json::array({
-                nameIdx,
-                ns_to_ms(std::get<1>(m)),
-                ns_to_ms(std::get<2>(m)),
-                1,  // phase: Interval
-                0,  // category: Tracy
-                nullptr
-            }));
-        }
-        thread["markers"] = {
-            {"schema", {{"name", 0}, {"startTime", 1}, {"endTime", 2}, {"phase", 3}, {"category", 4}, {"data", 5}}},
-            {"data", markersData}
-        };
-
-        // stackTable (empty)
-        thread["stackTable"] = {
-            {"schema", {{"prefix", 0}, {"frame", 1}}},
-            {"data", json::array()}
-        };
-
-        // frameTable (empty)
         thread["frameTable"] = {
-            {"schema", {{"location", 0}, {"relevantForJS", 1}, {"innerWindowID", 2}, {"implementation", 3}, {"line", 4}, {"column", 5}, {"category", 6}, {"subcategory", 7}}},
-            {"data", json::array()}
+            {"length", 0},
+            {"func", json::array()},
+            {"category", json::array()},
+            {"subcategory", json::array()},
+            {"line", json::array()},
+            {"column", json::array()},
+            {"address", json::array()},
+            {"nativeSymbol", json::array()},
+            {"inlineDepth", json::array()},
+            {"innerWindowID", json::array()}
         };
 
-        // stringTable (per-thread)
-        thread["stringTable"] = stringTable.to_json();
+        thread["funcTable"] = {
+            {"length", 0},
+            {"name", json::array()},
+            {"isJS", json::array()},
+            {"relevantForJS", json::array()},
+            {"resource", json::array()},
+            {"fileName", json::array()},
+            {"lineNumber", json::array()},
+            {"columnNumber", json::array()}
+        };
 
-        profile["threads"].push_back(thread);
+        auto& markers = thread["markers"];
+        markers["length"] = td.markers.size();
+        for (auto& m : td.markers) {
+            markers["category"].push_back(userCategory);
+            markers["data"].push_back({
+                {"type", "SimpleMarker"},
+                {"name", st.intern(std::get<0>(m))}
+            });
+            markers["name"].push_back(st.intern("SimpleMarker"));
+            markers["startTime"].push_back(ns_to_ms(std::get<1>(m)));
+            markers["endTime"].push_back(ns_to_ms(std::get<2>(m)));
+            markers["phase"].push_back(MarkerPhase::Interval);
+        }
+
+        thread["nativeSymbols"] = {
+            {"length", 0},
+            {"address", json::array()},
+            {"functionSize", json::array()},
+            {"libIndex", json::array()},
+            {"name", json::array()}
+        };
+
+        thread["resourceTable"] = {
+            {"length", 0},
+            {"lib", json::array()},
+            {"name", json::array()},
+            {"host", json::array()},
+            {"type", json::array()}
+        };
+
+        thread["samples"] = {
+            {"length", 0},
+            {"weightType", json::array()},
+            {"stack", json::array()},
+            {"timeDeltas", json::array()},
+            {"weight", json::array()},
+            {"threadCPUDelta", json::array()}
+        };
+
+        thread["stackTable"] = {
+            {"length", 0},
+            {"prefix", json::array()},
+            {"frame", json::array()}
+        };
     }
 
-    // pausedRanges (empty)
-    profile["pausedRanges"] = json::array();
-
-    // processes (empty)
-    profile["processes"] = json::array();
+    profile["shared"]["stringArray"] = st.to_json();
 
     // Output
     FILE* out = args.output ? fopen(args.output, "wb") : stdout;
