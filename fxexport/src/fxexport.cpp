@@ -180,6 +180,461 @@ static void collect_zone(
     }
 }
 
+struct ThreadTables
+{
+    struct FrameEntry
+    {
+        uint32_t funcIdx;
+        uint32_t nativeSymbolIdx;
+        uint32_t category;
+        int64_t address;
+        uint32_t line;
+        uint32_t column;
+        uint32_t inlineDepth;
+    };
+
+    struct FuncEntry
+    {
+        uint32_t nameIdx;
+        int32_t resourceIdx;
+        uint32_t fileNameIdx;
+        uint32_t lineNumber;
+        uint32_t columnNumber;
+    };
+
+    struct NativeSymbolEntry
+    {
+        int32_t libIndex;
+        uint64_t address;
+        uint32_t nameIdx;
+        uint32_t functionSize;
+    };
+
+    struct ResourceEntry
+    {
+        int32_t libIdx;
+        uint32_t nameIdx;
+    };
+
+    struct StackEntry
+    {
+        int32_t prefix;
+        uint32_t frame;
+    };
+
+    struct SampleEntry
+    {
+        double time;
+        int32_t stackIdx;
+        double weight;
+    };
+
+    struct MarkerEntry
+    {
+        uint32_t category;
+        uint32_t nameIdx;
+        uint32_t markerNameIdx;
+        double startTime;
+        double endTime;
+        MarkerPhase phase;
+    };
+
+    std::vector<FrameEntry> frames;
+    std::vector<FuncEntry> funcs;
+    std::vector<NativeSymbolEntry> nativeSymbols;
+    std::vector<ResourceEntry> resources;
+    std::vector<StackEntry> stacks;
+    std::vector<SampleEntry> samples;
+    std::vector<MarkerEntry> markers;
+
+    std::unordered_map<uint64_t, uint32_t> symAddrToNativeSymbol;
+    std::unordered_map<uint64_t, uint32_t> symAddrToFunc;
+    std::unordered_map<std::string, uint32_t> libNameToResource;
+    std::unordered_map<uint64_t, uint32_t> frameKeyToFrame;
+    std::unordered_map<uint64_t, int32_t> stackKeyToStack;
+
+    uint32_t getOrCreateResource(StringTable& st, const char* libName)
+    {
+        std::string key(libName ? libName : "");
+        auto it = libNameToResource.find(key);
+        if (it != libNameToResource.end()) return it->second;
+
+        uint32_t idx = static_cast<uint32_t>(resources.size());
+        resources.push_back({
+            -1,
+            st.intern(libName)
+        });
+        libNameToResource[key] = idx;
+        return idx;
+    }
+
+    uint32_t getOrCreateNativeSymbol(StringTable& st, uint64_t symAddr, const char* name, const char* imageName, uint32_t size)
+    {
+        auto it = symAddrToNativeSymbol.find(symAddr);
+        if (it != symAddrToNativeSymbol.end()) return it->second;
+
+        int32_t libIdx = -1;
+        if (imageName && imageName[0])
+        {
+            libIdx = static_cast<int32_t>(getOrCreateResource(st, imageName));
+        }
+
+        uint32_t idx = static_cast<uint32_t>(nativeSymbols.size());
+        nativeSymbols.push_back({
+            libIdx,
+            symAddr,
+            st.intern(name),
+            size
+        });
+        symAddrToNativeSymbol[symAddr] = idx;
+        return idx;
+    }
+
+    uint32_t getOrCreateFunc(StringTable& st, uint64_t symAddr, const char* name, const char* fileName, uint32_t line, int32_t resourceIdx)
+    {
+        auto it = symAddrToFunc.find(symAddr);
+        if (it != symAddrToFunc.end()) return it->second;
+
+        uint32_t idx = static_cast<uint32_t>(funcs.size());
+        funcs.push_back({
+            st.intern(name),
+            resourceIdx,
+            st.intern(fileName),
+            line,
+            0
+        });
+        symAddrToFunc[symAddr] = idx;
+        return idx;
+    }
+
+    uint32_t getOrCreateFrame(StringTable& st, uint64_t symAddr, const char* name, const char* fileName,
+                               uint32_t line, uint32_t column, uint32_t inlineDepth,
+                               const char* imageName, uint32_t symSize, uint32_t category)
+    {
+        uint64_t frameKey = symAddr ^ (static_cast<uint64_t>(inlineDepth) << 48);
+        auto it = frameKeyToFrame.find(frameKey);
+        if (it != frameKeyToFrame.end()) return it->second;
+
+        int32_t resourceIdx = -1;
+        if (imageName && imageName[0])
+        {
+            resourceIdx = static_cast<int32_t>(getOrCreateResource(st, imageName));
+        }
+
+        uint32_t funcIdx = getOrCreateFunc(st, symAddr, name, fileName, line, resourceIdx);
+        uint32_t nativeSymbolIdx = getOrCreateNativeSymbol(st, symAddr, name, imageName, symSize);
+
+        uint32_t idx = static_cast<uint32_t>(frames.size());
+        frames.push_back({
+            funcIdx,
+            nativeSymbolIdx,
+            category,
+            static_cast<int64_t>(symAddr),
+            line,
+            column,
+            inlineDepth
+        });
+        frameKeyToFrame[frameKey] = idx;
+        return idx;
+    }
+
+    int32_t getOrCreateStack(int32_t prefix, uint32_t frame)
+    {
+        uint64_t key = (static_cast<uint64_t>(prefix + 1) << 32) | frame;
+        auto it = stackKeyToStack.find(key);
+        if (it != stackKeyToStack.end()) return it->second;
+
+        int32_t idx = static_cast<int32_t>(stacks.size());
+        stacks.push_back({ prefix, frame });
+        stackKeyToStack[key] = idx;
+        return idx;
+    }
+
+    json frameTableToJson() const
+    {
+        json address = json::array();
+        json category = json::array();
+        json subcategory = json::array();
+        json func = json::array();
+        json nativeSymbol = json::array();
+        json innerWindowID = json::array();
+        json line = json::array();
+        json column = json::array();
+        json inlineDepth = json::array();
+
+        for (const auto& f : frames)
+        {
+            address.push_back(f.address);
+            category.push_back(f.category);
+            subcategory.push_back(nullptr);
+            func.push_back(f.funcIdx);
+            nativeSymbol.push_back(f.nativeSymbolIdx);
+            innerWindowID.push_back(nullptr);
+            line.push_back(f.line > 0 ? json(f.line) : json(nullptr));
+            column.push_back(f.column > 0 ? json(f.column) : json(nullptr));
+            inlineDepth.push_back(f.inlineDepth);
+        }
+
+        return {
+            {"length", frames.size()},
+            {"address", address},
+            {"category", category},
+            {"subcategory", subcategory},
+            {"func", func},
+            {"nativeSymbol", nativeSymbol},
+            {"innerWindowID", innerWindowID},
+            {"line", line},
+            {"column", column},
+            {"inlineDepth", inlineDepth}
+        };
+    }
+
+    json funcTableToJson() const
+    {
+        json name = json::array();
+        json isJS = json::array();
+        json relevantForJS = json::array();
+        json resource = json::array();
+        json fileName = json::array();
+        json lineNumber = json::array();
+        json columnNumber = json::array();
+
+        for (const auto& f : funcs)
+        {
+            name.push_back(f.nameIdx);
+            isJS.push_back(false);
+            relevantForJS.push_back(false);
+            resource.push_back(f.resourceIdx);
+            fileName.push_back(f.fileNameIdx);
+            lineNumber.push_back(f.lineNumber > 0 ? json(f.lineNumber) : json(nullptr));
+            columnNumber.push_back(f.columnNumber > 0 ? json(f.columnNumber) : json(nullptr));
+        }
+
+        return {
+            {"length", funcs.size()},
+            {"name", name},
+            {"isJS", isJS},
+            {"relevantForJS", relevantForJS},
+            {"resource", resource},
+            {"fileName", fileName},
+            {"lineNumber", lineNumber},
+            {"columnNumber", columnNumber}
+        };
+    }
+
+    json nativeSymbolsToJson() const
+    {
+        json libIndex = json::array();
+        json address = json::array();
+        json name = json::array();
+        json functionSize = json::array();
+
+        for (const auto& ns : nativeSymbols)
+        {
+            libIndex.push_back(ns.libIndex);
+            address.push_back(ns.address);
+            name.push_back(ns.nameIdx);
+            functionSize.push_back(ns.functionSize > 0 ? json(ns.functionSize) : json(nullptr));
+        }
+
+        return {
+            {"length", nativeSymbols.size()},
+            {"libIndex", libIndex},
+            {"address", address},
+            {"name", name},
+            {"functionSize", functionSize}
+        };
+    }
+
+    json resourceTableToJson() const
+    {
+        json lib = json::array();
+        json name = json::array();
+        json host = json::array();
+        json type = json::array();
+
+        for (const auto& r : resources)
+        {
+            lib.push_back(r.libIdx);
+            name.push_back(r.nameIdx);
+            host.push_back(nullptr);
+            type.push_back(1);
+        }
+
+        return {
+            {"length", resources.size()},
+            {"lib", lib},
+            {"name", name},
+            {"host", host},
+            {"type", type}
+        };
+    }
+
+    json stackTableToJson() const
+    {
+        json prefix = json::array();
+        json frame = json::array();
+
+        for (const auto& s : stacks)
+        {
+            prefix.push_back(s.prefix >= 0 ? json(s.prefix) : json(nullptr));
+            frame.push_back(s.frame);
+        }
+
+        return {
+            {"length", stacks.size()},
+            {"prefix", prefix},
+            {"frame", frame}
+        };
+    }
+
+    json samplesToJson() const
+    {
+        json stack = json::array();
+        json timeDeltas = json::array();
+        json weight = json::array();
+        json threadCPUDelta = json::array();
+
+        double prevTime = 0.0;
+        for (const auto& s : samples)
+        {
+            stack.push_back(s.stackIdx >= 0 ? json(s.stackIdx) : json(nullptr));
+            timeDeltas.push_back(s.time - prevTime);
+            weight.push_back(s.weight);
+            threadCPUDelta.push_back(nullptr);
+            prevTime = s.time;
+        }
+
+        return {
+            {"length", samples.size()},
+            {"stack", stack},
+            {"timeDeltas", timeDeltas},
+            {"weight", weight},
+            {"weightType", "samples"},
+            {"threadCPUDelta", threadCPUDelta}
+        };
+    }
+
+    json markersToJson() const
+    {
+        json category = json::array();
+        json data = json::array();
+        json name = json::array();
+        json startTime = json::array();
+        json endTime = json::array();
+        json phase = json::array();
+
+        for (const auto& m : markers)
+        {
+            category.push_back(m.category);
+            data.push_back({
+                {"type", "TracyZone"},
+                {"name", m.nameIdx}
+            });
+            name.push_back(m.markerNameIdx);
+            startTime.push_back(m.startTime);
+            endTime.push_back(m.endTime);
+            phase.push_back(static_cast<int>(m.phase));
+        }
+
+        return {
+            {"length", markers.size()},
+            {"category", category},
+            {"data", data},
+            {"name", name},
+            {"startTime", startTime},
+            {"endTime", endTime},
+            {"phase", phase}
+        };
+    }
+};
+
+static void process_markers(
+    const std::vector<MarkerData>& marker_data,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t userCategory)
+{
+    uint32_t markerTypeIdx = st.intern("TracyZone");
+    for (const auto& m : marker_data)
+    {
+        tables.markers.push_back({
+            userCategory,
+            st.intern(m.name),
+            markerTypeIdx,
+            ns_to_ms(m.startNs),
+            ns_to_ms(m.endNs),
+            MarkerPhase::Interval
+        });
+    }
+}
+
+static void process_samples(
+    const tracy::Worker& worker,
+    const tracy::ThreadData& td,
+    ThreadTables& tables,
+    StringTable& st,
+    int64_t& minTime,
+    int64_t& maxTime,
+    uint32_t userCategory)
+{
+    for (const auto& sample : td.samples)
+    {
+        int64_t sampleTime = sample.time.Val();
+        uint32_t csIdx = sample.callstack.Val();
+
+        if (csIdx == 0) continue;
+
+        const auto& callstack = worker.GetCallstack(csIdx);
+        if (callstack.empty()) continue;
+
+        minTime = std::min(minTime, sampleTime);
+        maxTime = std::max(maxTime, sampleTime);
+
+        int32_t stackIdx = -1;
+
+        for (size_t i = callstack.size(); i > 0; i--)
+        {
+            auto frameData = worker.GetCallstackFrame(callstack[i - 1]);
+            if (!frameData) continue;
+
+            const char* imageName = frameData->imageName.Active() ? worker.GetString(frameData->imageName) : "";
+
+            for (uint8_t j = frameData->size; j > 0; j--)
+            {
+                const auto& frame = frameData->data[j - 1];
+                const char* funcName = worker.GetString(frame.name);
+                const char* fileName = worker.GetString(frame.file);
+                uint32_t line = frame.line;
+                uint64_t symAddr = frame.symAddr;
+
+                uint32_t symSize = 0;
+                auto symData = worker.GetSymbolData(symAddr);
+                if (symData)
+                {
+                    symSize = symData->size.Val();
+                }
+
+                uint32_t inlineDepth = frameData->size - j;
+
+                uint32_t frameIdx = tables.getOrCreateFrame(
+                    st, symAddr, funcName, fileName,
+                    line, 0, inlineDepth,
+                    imageName, symSize, userCategory
+                );
+
+                stackIdx = tables.getOrCreateStack(stackIdx, frameIdx);
+            }
+        }
+
+        tables.samples.push_back({
+            ns_to_ms(sampleTime),
+            stackIdx,
+            1.0
+        });
+    }
+}
+
 int main(int argc, char** argv)
 {
 #ifdef _WIN32
@@ -205,6 +660,13 @@ int main(int argc, char** argv)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+#ifndef TRACY_NO_STATISTICS
+    while (!worker.AreCallstackSamplesReady())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+#endif
 
     json profile;
     StringTable st;
@@ -243,7 +705,7 @@ int main(int argc, char** argv)
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
         {"startTime", worker.GetCaptureTime() * 1000},
         {"startTimeAsClockMonotonicNanosecondsSinceBoot", 0}, // TODO: platform specific
-        {"symbolicated", false}, // TODO
+        {"symbolicated", true},
         {"version", 28},
         {"sampleUnits", {
             {"time", "ms"},
@@ -262,121 +724,48 @@ int main(int argc, char** argv)
     // TODO
     profile["libs"] = json::array();
 
-    profile["threads"] = json::array();
-
     for (const auto* td : worker.GetThreadData())
     {
-        if (!td) continue;
-
+        ThreadTables tables;
         std::vector<MarkerData> marker_data;
         int64_t minTime = INT64_MAX;
         int64_t maxTime = 0;
 
         collect_zones_recursive(worker, td->timeline, marker_data, minTime, maxTime);
 
-        if (marker_data.empty())
-        {
-            minTime = 0;
-            maxTime = 0;
-        }
+        process_markers(marker_data, tables, st, static_cast<uint32_t>(userCategory));
+        process_samples(worker, *td, tables, st, minTime, maxTime, static_cast<uint32_t>(userCategory));
+
+        if (minTime == INT64_MAX) minTime = 0;
 
         const char* threadName = worker.GetThreadName(td->id);
+        auto pid_ = worker.GetPidFromTid(td->id);
+        auto pid = pid_ != 0 ? pid_ : worker.GetPid();
 
         auto& thread = profile["threads"].emplace_back();
         thread["name"] = threadName ? threadName : "Thread";
-        thread["isMainThread"] = false;
+        thread["isMainThread"] = pid == td->id;
         thread["processType"] = "default";
         thread["processName"] = captureProgram.empty() ? "Tracy" : captureProgram;
         thread["processStartupTime"] = 0.0;
         thread["processShutdownTime"] = nullptr;
         thread["registerTime"] = ns_to_ms(minTime);
         thread["unregisterTime"] = ns_to_ms(maxTime);
-        auto pid = worker.GetPidFromTid(td->id);
-        thread["pid"] = std::to_string(pid != 0 ? pid : worker.GetPid());
+        thread["pid"] = std::to_string(pid);
         thread["tid"] = td->id;
 
-        thread["frameTable"] = {
-            {"length", 0},
-            {"func", json::array()},
-            {"category", json::array()},
-            {"subcategory", json::array()},
-            {"line", json::array()},
-            {"column", json::array()},
-            {"address", json::array()},
-            {"nativeSymbol", json::array()},
-            {"inlineDepth", json::array()},
-            {"innerWindowID", json::array()}
-        };
-
-        thread["funcTable"] = {
-            {"length", 0},
-            {"name", json::array()},
-            {"isJS", json::array()},
-            {"relevantForJS", json::array()},
-            {"resource", json::array()},
-            {"fileName", json::array()},
-            {"lineNumber", json::array()},
-            {"columnNumber", json::array()}
-        };
-
-        thread["markers"] = {
-            {"length", marker_data.size()},
-            {"category", json::array()},
-            {"data", json::array()},
-            {"endTime", json::array()},
-            {"name", json::array()},
-            {"phase", json::array()},
-            {"startTime", json::array()}
-        };
-        auto& markers = thread["markers"];
-        auto markerType = "TracyZone";
-        uint32_t markerTypeIdx = st.intern(markerType);
-        for (const auto& m : marker_data)
-        {
-            markers["category"].push_back(userCategory);
-            markers["data"].push_back({
-                {"type", markerType},
-                {"name", st.intern(m.name)}
-            });
-            markers["name"].push_back(markerTypeIdx);
-            markers["startTime"].push_back(ns_to_ms(m.startNs));
-            markers["endTime"].push_back(ns_to_ms(m.endNs));
-            markers["phase"].push_back(static_cast<int>(MarkerPhase::Interval));
-        }
-
-        thread["nativeSymbols"] = {
-            {"length", 0},
-            {"address", json::array()},
-            {"functionSize", json::array()},
-            {"libIndex", json::array()},
-            {"name", json::array()}
-        };
-
-        thread["resourceTable"] = {
-            {"length", 0},
-            {"lib", json::array()},
-            {"name", json::array()},
-            {"host", json::array()},
-            {"type", json::array()}
-        };
-
-        thread["samples"] = {
-            {"length", 0},
-            {"weightType", json::array()},
-            {"stack", json::array()},
-            {"timeDeltas", json::array()},
-            {"weight", json::array()},
-            {"threadCPUDelta", json::array()}
-        };
-
-        thread["stackTable"] = {
-            {"length", 0},
-            {"prefix", json::array()},
-            {"frame", json::array()}
-        };
+        thread["frameTable"] = tables.frameTableToJson();
+        thread["funcTable"] = tables.funcTableToJson();
+        thread["markers"] = tables.markersToJson();
+        thread["nativeSymbols"] = tables.nativeSymbolsToJson();
+        thread["resourceTable"] = tables.resourceTableToJson();
+        thread["samples"] = tables.samplesToJson();
+        thread["stackTable"] = tables.stackTableToJson();
     }
 
-    profile["shared"]["stringArray"] = st.to_json();
+    profile["shared"] = {
+        {"stringArray", st.to_json()}
+    };
 
     FILE* out = args.output ? fopen(args.output, "wb") : stdout;
     if (!out)
