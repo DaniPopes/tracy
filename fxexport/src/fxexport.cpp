@@ -3,10 +3,9 @@
 #endif
 
 #include <algorithm>
-#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -839,13 +838,14 @@ int main(int argc, char** argv)
 
         if (minTime == INT64_MAX) minTime = 0;
 
-        const char* threadName = worker.GetThreadName(td->id);
+        const char* threadName_ = worker.GetThreadName(td->id);
+        std::string threadName = threadName_ ? threadName_ : std::format("Thread <{}>", td->id);
         auto pid_ = worker.GetPidFromTid(td->id);
         auto pid = pid_ != 0 ? pid_ : worker.GetPid();
 
         auto& thread = profile["threads"].emplace_back();
-        thread["name"] = threadName ? threadName : "Thread";
-        thread["isMainThread"] = pid == td->id;
+        thread["name"] = threadName;
+        thread["isMainThread"] = threadName == "Main thread" || pid == td->id;
         thread["processType"] = "default";
         thread["processName"] = captureProgram.empty() ? "Tracy" : captureProgram;
         thread["processStartupTime"] = 0.0;
