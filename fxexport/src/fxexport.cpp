@@ -262,6 +262,7 @@ int main(int argc, char** argv)
         tables.processMessages(worker, st, messageCategory, td->id);
         tables.processLocks(worker, st, lockCategory, td->id);
         tables.processSamples(worker, *td, st, lt, userCategory, kernelCategory);
+        tables.processAllocations(worker, st, lt, memoryCategory, td->id);
 
         if (threadIndex == 0)
         {
@@ -278,14 +279,12 @@ int main(int argc, char** argv)
 
         if ((isMainThread && pid == worker.GetPid()) || (mainThreadIndex == 0 && isMainThread)) {
             mainThreadIndex = threadIndex;
+        }
 
-            ThreadTables allocTables;
-            allocTables.processAllocations(worker, st, lt, memoryCategory);
-            json allocJson = allocTables.nativeAllocationsToJson();
-            if (!allocJson.is_null())
-            {
-                thread["nativeAllocations"] = std::move(allocJson);
-            }
+        json allocJson = tables.nativeAllocationsToJson();
+        if (!allocJson.is_null())
+        {
+            thread["nativeAllocations"] = std::move(allocJson);
         }
 
         thread["name"] = threadName;

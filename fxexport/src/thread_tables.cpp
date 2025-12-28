@@ -534,7 +534,8 @@ void ThreadTables::processAllocations(
     const tracy::Worker& worker,
     StringTable& st,
     LibTable& lt,
-    uint32_t category)
+    uint32_t category,
+    uint64_t threadId)
 {
     for (const auto& [memName, memData] : worker.GetMemNameMap())
     {
@@ -542,15 +543,19 @@ void ThreadTables::processAllocations(
 
         for (const auto& ev : memData->data)
         {
+            uint64_t allocThreadId = worker.DecompressThread(ev.ThreadAlloc());
+            uint64_t freeThreadId = worker.DecompressThread(ev.ThreadFree());
+
+            bool hasAlloc = allocThreadId == threadId;
+            bool hasFree = ev.TimeFree() >= 0 && freeThreadId == threadId;
+            if (!hasAlloc && !hasFree) continue;
+
             int64_t allocTime = ev.TimeAlloc();
             int64_t freeTime = ev.TimeFree();
             int64_t size = static_cast<int64_t>(ev.Size());
             uint64_t ptr = ev.Ptr();
             uint32_t csAllocIdx = ev.CsAlloc();
             uint32_t csFreeIdx = ev.csFree.Val();
-
-            uint64_t allocThreadId = worker.DecompressThread(ev.ThreadAlloc());
-            uint64_t freeThreadId = worker.DecompressThread(ev.ThreadFree());
 
             auto buildStack = [&](uint32_t csIdx) -> int32_t {
                 if (csIdx == 0) return -1;
@@ -594,18 +599,21 @@ void ThreadTables::processAllocations(
                 return stackIdx;
             };
 
-            minTime = std::min(minTime, allocTime);
-            maxTime = std::max(maxTime, allocTime);
+            if (hasAlloc)
+            {
+                minTime = std::min(minTime, allocTime);
+                maxTime = std::max(maxTime, allocTime);
 
-            allocations.push_back({
-                ns_to_ms(allocTime),
-                size,
-                buildStack(csAllocIdx),
-                ptr,
-                allocThreadId
-            });
+                allocations.push_back({
+                    ns_to_ms(allocTime),
+                    size,
+                    buildStack(csAllocIdx),
+                    ptr,
+                    allocThreadId
+                });
+            }
 
-            if (freeTime >= 0)
+            if (hasFree)
             {
                 minTime = std::min(minTime, freeTime);
                 maxTime = std::max(maxTime, freeTime);

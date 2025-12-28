@@ -158,7 +158,8 @@ struct ThreadTables
         const tracy::Worker& worker,
         StringTable& st,
         LibTable& lt,
-        uint32_t category);
+        uint32_t category,
+        uint64_t threadId);
 
     json frameTableToJson() const;
     json funcTableToJson() const;
