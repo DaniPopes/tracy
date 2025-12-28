@@ -108,6 +108,7 @@ private:
 struct MarkerData
 {
     const char* name;
+    const char* text;
     int64_t startNs;
     int64_t endNs;
 };
@@ -171,10 +172,19 @@ static void collect_zone(
     if (!zone.IsEndValid()) return;
 
     const char* name = worker.GetZoneName(zone);
+    const char* text = nullptr;
+    if (worker.HasZoneExtra(zone))
+    {
+        const auto& extra = worker.GetZoneExtra(zone);
+        if (extra.text.Active())
+        {
+            text = worker.GetString(extra.text);
+        }
+    }
     int64_t start = zone.Start();
     int64_t end = zone.End();
 
-    markers.push_back({ name, start, end });
+    markers.push_back({ name, text, start, end });
     minTime = std::min(minTime, start);
     maxTime = std::max(maxTime, end);
 
@@ -238,6 +248,8 @@ struct ThreadTables
     {
         uint32_t category;
         uint32_t nameIdx;
+        uint32_t textIdx;
+        bool hasText;
         uint32_t markerNameIdx;
         double startTime;
         double endTime;
@@ -532,10 +544,15 @@ struct ThreadTables
         for (const auto& m : markers)
         {
             category.push_back(m.category);
-            data.push_back({
+            json markerData = {
                 {"type", "TracyZone"},
                 {"name", m.nameIdx}
-            });
+            };
+            if (m.hasText)
+            {
+                markerData["text"] = m.textIdx;
+            }
+            data.push_back(std::move(markerData));
             name.push_back(m.markerNameIdx);
             startTime.push_back(m.startTime);
             endTime.push_back(m.endTime);
@@ -563,9 +580,12 @@ static void process_markers(
     uint32_t markerTypeIdx = st.intern("TracyZone");
     for (const auto& m : marker_data)
     {
+        bool hasText = m.text != nullptr;
         tables.markers.push_back({
             userCategory,
             st.intern(m.name),
+            hasText ? st.intern(m.text) : 0u,
+            hasText,
             markerTypeIdx,
             ns_to_ms(m.startNs),
             ns_to_ms(m.endNs),
@@ -684,6 +704,7 @@ int main(int argc, char** argv)
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
     const std::string& hostInfo = worker.GetHostInfo();
+    // Indexes into the `categories` array.
     uint32_t userCategory = 1;
     uint32_t kernelCategory = 2;
     profile["meta"] = {
@@ -701,16 +722,16 @@ int main(int argc, char** argv)
                 {"chartLabel", "{marker.data.name}"},
                 {"tooltipLabel", "{marker.data.name}"},
                 {"tableLabel", "{marker.data.name}"},
-                {"description", "Emitted for Tracy zones."},
+                {"description", "Emitted for Tracy zones"},
                 {"fields", json::array({
-                    {
-                        {"key", "name"}, {"label", "Name"}, {"format", "unique-string"}
-                    }
+                    {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
+                    {{"key", "text"}, {"label", "Text"}, {"description", "User text"}, {"format", "unique-string"}}
                 })}
             }
         })},
         {"pausedRanges", json::array()},
         {"platform", hostInfo},
+        // https://github.com/firefox-devtools/profiler/blob/main/docs-developer/CHANGELOG-formats.md
         {"preprocessedProfileVersion", 57},
         {"processType", 0},
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
