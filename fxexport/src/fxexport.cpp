@@ -13,7 +13,6 @@
 #include "../../server/TracyWorker.hpp"
 #include "../../getopt/getopt.h"
 
-#include "collectors.hpp"
 #include "common.hpp"
 #include "lib_table.hpp"
 #include "string_table.hpp"
@@ -141,7 +140,7 @@ int main(int argc, char** argv)
         })},
         {"debug", false},
         {"interval", ns_to_ms(worker.GetSamplingPeriod())},
-        {"markerSchema", build_marker_schemas()},
+        {"markerSchema", ThreadTables::buildMarkerSchemas()},
         {"pausedRanges", json::array()},
         {"platform", hostInfo},
         {"preprocessedProfileVersion", 57},
@@ -235,8 +234,9 @@ int main(int argc, char** argv)
         }
     }
 
+    profile["counters"] = ThreadTables::buildCounters(worker, st);
+
     profile["libs"] = lt.to_json();
-    profile["counters"] = build_counters(worker, st);
     profile["shared"] = {
         {"stringArray", st.to_json()}
     };

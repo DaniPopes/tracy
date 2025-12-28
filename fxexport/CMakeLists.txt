@@ -27,7 +27,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/server.cmake)
 
 set(PROGRAM_FILES
     src/fxexport.cpp
-    src/collectors.cpp
     src/thread_tables.cpp
 )
 
