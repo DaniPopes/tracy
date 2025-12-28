@@ -116,7 +116,6 @@ public:
         if (it != m_map.end())
         {
             auto& lib = m_libs[it->second];
-            // Update the start and end addresses.
             if (addr != 0)
             {
                 uint64_t end = addr + size;
@@ -166,14 +165,6 @@ private:
     std::unordered_map<std::string, int32_t> m_map;
 };
 
-struct MarkerData
-{
-    const char* name;
-    const char* text;
-    int64_t startNs;
-    int64_t endNs;
-};
-
 enum class MarkerPhase {
     Instant = 0,
     Interval = 1,
@@ -191,69 +182,9 @@ static bool is_kernel_address(uint64_t addr)
     return (addr >> 63) != 0;
 }
 
-static void collect_zone(
-    const tracy::Worker& worker,
-    const tracy::ZoneEvent& zone,
-    std::vector<MarkerData>& markers,
-    int64_t& minTime,
-    int64_t& maxTime);
-
-static void collect_zones_recursive(
-    const tracy::Worker& worker,
-    const tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>>& zones,
-    std::vector<MarkerData>& markers,
-    int64_t& minTime,
-    int64_t& maxTime)
+static uint32_t color_to_rgb(uint32_t color)
 {
-    if (zones.is_magic())
-    {
-        auto& vec = *(tracy::Vector<tracy::ZoneEvent>*)&zones;
-        for (auto& zone : vec)
-        {
-            collect_zone(worker, zone, markers, minTime, maxTime);
-        }
-    }
-    else
-    {
-        for (auto& zonePtr : zones)
-        {
-            if (!zonePtr) continue;
-            collect_zone(worker, *zonePtr, markers, minTime, maxTime);
-        }
-    }
-}
-
-static void collect_zone(
-    const tracy::Worker& worker,
-    const tracy::ZoneEvent& zone,
-    std::vector<MarkerData>& markers,
-    int64_t& minTime,
-    int64_t& maxTime)
-{
-    if (!zone.IsEndValid()) return;
-
-    const char* name = worker.GetZoneName(zone);
-    const char* text = nullptr;
-    if (worker.HasZoneExtra(zone))
-    {
-        const auto& extra = worker.GetZoneExtra(zone);
-        if (extra.text.Active())
-        {
-            text = worker.GetString(extra.text);
-        }
-    }
-    int64_t start = zone.Start();
-    int64_t end = zone.End();
-
-    markers.push_back({ name, text, start, end });
-    minTime = std::min(minTime, start);
-    maxTime = std::max(maxTime, end);
-
-    if (zone.HasChildren())
-    {
-        auto& children = worker.GetZoneChildren(zone.Child());
-        collect_zones_recursive(worker, children, markers, minTime, maxTime);
-    }
+    return color & 0xFFFFFF;
 }
 
 struct ThreadTables
@@ -307,14 +238,13 @@ struct ThreadTables
 
     struct MarkerEntry
     {
+        std::string type;
         uint32_t category;
         uint32_t nameIdx;
-        uint32_t textIdx;
-        bool hasText;
-        uint32_t markerNameIdx;
         double startTime;
         double endTime;
         MarkerPhase phase;
+        json data;
     };
 
     std::vector<FrameEntry> frames;
@@ -613,16 +543,8 @@ struct ThreadTables
         for (const auto& m : markers)
         {
             category.push_back(m.category);
-            json markerData = {
-                {"type", "TracyZone"},
-                {"name", m.nameIdx}
-            };
-            if (m.hasText)
-            {
-                markerData["text"] = m.textIdx;
-            }
-            data.push_back(std::move(markerData));
-            name.push_back(m.markerNameIdx);
+            data.push_back(m.data);
+            name.push_back(m.nameIdx);
             startTime.push_back(m.startTime);
             endTime.push_back(m.endTime);
             phase.push_back(static_cast<int>(m.phase));
@@ -640,25 +562,391 @@ struct ThreadTables
     }
 };
 
-static void process_markers(
-    const std::vector<MarkerData>& marker_data,
+static void collect_zone(
+    const tracy::Worker& worker,
+    const tracy::ZoneEvent& zone,
     ThreadTables& tables,
     StringTable& st,
-    uint32_t userCategory)
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime);
+
+static void collect_zones_recursive(
+    const tracy::Worker& worker,
+    const tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>>& zones,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime)
 {
-    uint32_t markerTypeIdx = st.intern("TracyZone");
-    for (const auto& m : marker_data)
+    if (zones.is_magic())
     {
-        bool hasText = m.text != nullptr;
+        auto& vec = *(tracy::Vector<tracy::ZoneEvent>*)&zones;
+        for (auto& zone : vec)
+        {
+            collect_zone(worker, zone, tables, st, category, minTime, maxTime);
+        }
+    }
+    else
+    {
+        for (auto& zonePtr : zones)
+        {
+            if (!zonePtr) continue;
+            collect_zone(worker, *zonePtr, tables, st, category, minTime, maxTime);
+        }
+    }
+}
+
+static void collect_zone(
+    const tracy::Worker& worker,
+    const tracy::ZoneEvent& zone,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    if (!zone.IsEndValid()) return;
+
+    const char* name = worker.GetZoneName(zone);
+    const char* text = nullptr;
+    uint32_t color = 0;
+    bool hasColor = false;
+
+    if (worker.HasZoneExtra(zone))
+    {
+        const auto& extra = worker.GetZoneExtra(zone);
+        if (extra.text.Active())
+        {
+            text = worker.GetString(extra.text);
+        }
+        if (extra.color.Val() != 0)
+        {
+            color = extra.color.Val();
+            hasColor = true;
+        }
+    }
+
+    int64_t start = zone.Start();
+    int64_t end = zone.End();
+    minTime = std::min(minTime, start);
+    maxTime = std::max(maxTime, end);
+
+    const auto& srcloc = worker.GetSourceLocation(zone.SrcLoc());
+    const char* file = worker.GetString(srcloc.file);
+    const char* function = worker.GetString(srcloc.function);
+    uint32_t line = srcloc.line;
+
+    json markerData = {
+        {"type", "TracyZone"},
+        {"name", st.intern(name)}
+    };
+    if (text)
+    {
+        markerData["text"] = st.intern(text);
+    }
+    if (hasColor)
+    {
+        markerData["color"] = std::format("#{:06x}", color_to_rgb(color));
+    }
+    if (file && file[0])
+    {
+        markerData["file"] = st.intern(file);
+        markerData["line"] = line;
+    }
+    if (function && function[0])
+    {
+        markerData["function"] = st.intern(function);
+    }
+
+    tables.markers.push_back({
+        "TracyZone",
+        category,
+        st.intern("TracyZone"),
+        ns_to_ms(start),
+        ns_to_ms(end),
+        MarkerPhase::Interval,
+        std::move(markerData)
+    });
+
+    if (zone.HasChildren())
+    {
+        auto& children = worker.GetZoneChildren(zone.Child());
+        collect_zones_recursive(worker, children, tables, st, category, minTime, maxTime);
+    }
+}
+
+static void collect_gpu_zone(
+    const tracy::Worker& worker,
+    const tracy::GpuEvent& zone,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime);
+
+static void collect_gpu_zones_recursive(
+    const tracy::Worker& worker,
+    const tracy::Vector<tracy::short_ptr<tracy::GpuEvent>>& zones,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    if (zones.is_magic())
+    {
+        auto& vec = *(tracy::Vector<tracy::GpuEvent>*)&zones;
+        for (auto& zone : vec)
+        {
+            collect_gpu_zone(worker, zone, tables, st, category, minTime, maxTime);
+        }
+    }
+    else
+    {
+        for (auto& zonePtr : zones)
+        {
+            if (!zonePtr) continue;
+            collect_gpu_zone(worker, *zonePtr, tables, st, category, minTime, maxTime);
+        }
+    }
+}
+
+static void collect_gpu_zone(
+    const tracy::Worker& worker,
+    const tracy::GpuEvent& zone,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    if (zone.GpuEnd() < 0) return;
+
+    const char* name = worker.GetZoneName(zone);
+    int64_t gpuStart = zone.GpuStart();
+    int64_t gpuEnd = zone.GpuEnd();
+    int64_t cpuStart = zone.CpuStart();
+    int64_t cpuEnd = zone.CpuEnd();
+
+    minTime = std::min(minTime, gpuStart);
+    maxTime = std::max(maxTime, gpuEnd);
+
+    const auto& srcloc = worker.GetSourceLocation(zone.SrcLoc());
+    const char* file = worker.GetString(srcloc.file);
+    const char* function = worker.GetString(srcloc.function);
+    uint32_t line = srcloc.line;
+
+    json markerData = {
+        {"type", "TracyGpuZone"},
+        {"name", st.intern(name)},
+        {"gpuStart", ns_to_ms(gpuStart)},
+        {"gpuEnd", ns_to_ms(gpuEnd)},
+        {"cpuStart", ns_to_ms(cpuStart)},
+        {"cpuEnd", ns_to_ms(cpuEnd)}
+    };
+    if (file && file[0])
+    {
+        markerData["file"] = st.intern(file);
+        markerData["line"] = line;
+    }
+    if (function && function[0])
+    {
+        markerData["function"] = st.intern(function);
+    }
+
+    tables.markers.push_back({
+        "TracyGpuZone",
+        category,
+        st.intern("TracyGpuZone"),
+        ns_to_ms(gpuStart),
+        ns_to_ms(gpuEnd),
+        MarkerPhase::Interval,
+        std::move(markerData)
+    });
+
+    if (zone.Child() >= 0)
+    {
+        auto& children = worker.GetGpuChildren(zone.Child());
+        collect_gpu_zones_recursive(worker, children, tables, st, category, minTime, maxTime);
+    }
+}
+
+static void process_messages(
+    const tracy::Worker& worker,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    uint64_t threadId,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    for (const auto& msgPtr : worker.GetMessages())
+    {
+        if (!msgPtr) continue;
+        const auto& msg = *msgPtr;
+
+        uint64_t msgThread = worker.DecompressThread(msg.thread);
+        if (msgThread != threadId) continue;
+
+        int64_t time = msg.time;
+        const char* text = worker.GetString(msg.ref);
+        uint32_t color = msg.color;
+
+        minTime = std::min(minTime, time);
+        maxTime = std::max(maxTime, time);
+
+        json markerData = {
+            {"type", "TracyMessage"},
+            {"text", st.intern(text)}
+        };
+        if (color != 0)
+        {
+            markerData["color"] = std::format("#{:06x}", color_to_rgb(color));
+        }
+
         tables.markers.push_back({
-            userCategory,
-            st.intern(m.name),
-            hasText ? st.intern(m.text) : 0u,
-            hasText,
-            markerTypeIdx,
-            ns_to_ms(m.startNs),
-            ns_to_ms(m.endNs),
-            MarkerPhase::Interval
+            "TracyMessage",
+            category,
+            st.intern("TracyMessage"),
+            ns_to_ms(time),
+            ns_to_ms(time),
+            MarkerPhase::Instant,
+            std::move(markerData)
+        });
+    }
+}
+
+static void process_locks(
+    const tracy::Worker& worker,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    uint64_t threadId,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    for (const auto& [lockId, lockMap] : worker.GetLockMap())
+    {
+        if (!lockMap || !lockMap->valid) continue;
+
+        auto threadIt = lockMap->threadMap.find(threadId);
+        if (threadIt == lockMap->threadMap.end()) continue;
+        uint8_t threadBit = threadIt->second;
+
+        const char* lockName = nullptr;
+        if (lockMap->customName.Active())
+        {
+            lockName = worker.GetString(lockMap->customName);
+        }
+        else
+        {
+            const auto& srcloc = worker.GetSourceLocation(lockMap->srcloc);
+            lockName = worker.GetString(srcloc.function);
+        }
+
+        int64_t waitStart = -1;
+
+        for (const auto& lep : lockMap->timeline)
+        {
+            const auto& ev = *lep.ptr;
+            int64_t time = ev.Time();
+            auto type = ev.type;
+            uint8_t evThread = ev.thread;
+
+            if (evThread != threadBit) continue;
+
+            minTime = std::min(minTime, time);
+            maxTime = std::max(maxTime, time);
+
+            switch (type)
+            {
+            case tracy::LockEvent::Type::Wait:
+            case tracy::LockEvent::Type::WaitShared:
+            {
+                waitStart = time;
+                break;
+            }
+            case tracy::LockEvent::Type::Obtain:
+            case tracy::LockEvent::Type::ObtainShared:
+            {
+                if (waitStart >= 0)
+                {
+                    bool isShared = (type == tracy::LockEvent::Type::ObtainShared);
+                    json markerData = {
+                        {"type", "TracyLock"},
+                        {"name", st.intern(lockName)},
+                        {"lockId", lockId},
+                        {"operation", isShared ? "wait_shared" : "wait"}
+                    };
+
+                    tables.markers.push_back({
+                        "TracyLock",
+                        category,
+                        st.intern("TracyLock"),
+                        ns_to_ms(waitStart),
+                        ns_to_ms(time),
+                        MarkerPhase::Interval,
+                        std::move(markerData)
+                    });
+                    waitStart = -1;
+                }
+                break;
+            }
+            case tracy::LockEvent::Type::Release:
+            case tracy::LockEvent::Type::ReleaseShared:
+            {
+                break;
+            }
+            }
+        }
+    }
+}
+
+static void process_frames(
+    const tracy::Worker& worker,
+    ThreadTables& tables,
+    StringTable& st,
+    uint32_t category,
+    int64_t& minTime,
+    int64_t& maxTime)
+{
+    const auto* framesBase = worker.GetFramesBase();
+    if (!framesBase) return;
+
+    const char* frameName = worker.GetString(framesBase->name);
+
+    for (size_t i = 0; i < framesBase->frames.size(); i++)
+    {
+        const auto& frame = framesBase->frames[i];
+        int64_t start = frame.start;
+        int64_t end = frame.end;
+
+        if (end < 0) continue;
+
+        minTime = std::min(minTime, start);
+        maxTime = std::max(maxTime, end);
+
+        double durationMs = ns_to_ms(end - start);
+        double fps = durationMs > 0 ? 1000.0 / durationMs : 0;
+
+        json markerData = {
+            {"type", "TracyFrame"},
+            {"name", st.intern(frameName)},
+            {"frameNumber", static_cast<uint64_t>(i)},
+            {"duration", durationMs},
+            {"fps", fps}
+        };
+
+        tables.markers.push_back({
+            "TracyFrame",
+            category,
+            st.intern("TracyFrame"),
+            ns_to_ms(start),
+            ns_to_ms(end),
+            MarkerPhase::Interval,
+            std::move(markerData)
         });
     }
 }
@@ -735,6 +1023,151 @@ static void process_samples(
     }
 }
 
+static json build_counters(const tracy::Worker& worker, StringTable& st)
+{
+    json counters = json::array();
+
+    for (const auto* plot : worker.GetPlots())
+    {
+        if (!plot) continue;
+        if (plot->data.empty()) continue;
+        if (plot->type == tracy::PlotType::SysTime) continue;
+
+        const char* plotName = worker.GetString(plot->name);
+
+        json time = json::array();
+        json count = json::array();
+
+        for (const auto& item : plot->data)
+        {
+            time.push_back(ns_to_ms(item.time.Val()));
+            count.push_back(item.val);
+        }
+
+        std::string category;
+        std::string description;
+        std::string color = "grey";
+
+        switch (plot->type)
+        {
+        case tracy::PlotType::User:
+            category = "User";
+            description = "User-defined plot";
+            color = "blue";
+            break;
+        case tracy::PlotType::Memory:
+            category = "Memory";
+            description = "Memory usage";
+            color = "purple";
+            break;
+        case tracy::PlotType::Power:
+            category = "Power";
+            description = "Power consumption";
+            color = "orange";
+            break;
+        default:
+            category = "Other";
+            description = "Plot data";
+            break;
+        }
+
+        counters.push_back({
+            {"name", plotName},
+            {"category", category},
+            {"description", description},
+            {"color", color},
+            {"pid", std::to_string(worker.GetPid())},
+            {"mainThreadIndex", 0},
+            {"samples", {
+                {"time", time},
+                {"count", count},
+                {"length", plot->data.size()}
+            }}
+        });
+    }
+
+    return counters;
+}
+
+static json build_marker_schemas()
+{
+    return json::array({
+        {
+            {"name", "TracyZone"},
+            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"chartLabel", "{marker.data.name}"},
+            {"tooltipLabel", "{marker.data.name}"},
+            {"tableLabel", "{marker.data.name}"},
+            {"description", "Tracy instrumentation zone"},
+            {"fields", json::array({
+                {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
+                {{"key", "text"}, {"label", "Text"}, {"format", "unique-string"}},
+                {{"key", "color"}, {"label", "Color"}, {"format", "string"}},
+                {{"key", "file"}, {"label", "File"}, {"format", "unique-string"}},
+                {{"key", "line"}, {"label", "Line"}, {"format", "integer"}},
+                {{"key", "function"}, {"label", "Function"}, {"format", "unique-string"}}
+            })}
+        },
+        {
+            {"name", "TracyMessage"},
+            {"display", json::array({"marker-chart", "marker-table"})},
+            {"chartLabel", "{marker.data.text}"},
+            {"tooltipLabel", "Message: {marker.data.text}"},
+            {"tableLabel", "{marker.data.text}"},
+            {"description", "Tracy log message"},
+            {"fields", json::array({
+                {{"key", "text"}, {"label", "Message"}, {"format", "unique-string"}},
+                {{"key", "color"}, {"label", "Color"}, {"format", "string"}}
+            })}
+        },
+        {
+            {"name", "TracyLock"},
+            {"display", json::array({"marker-chart", "marker-table"})},
+            {"chartLabel", "{marker.data.name}"},
+            {"tooltipLabel", "Lock: {marker.data.name} ({marker.data.operation})"},
+            {"tableLabel", "{marker.data.name}"},
+            {"description", "Tracy lock contention"},
+            {"fields", json::array({
+                {{"key", "name"}, {"label", "Lock Name"}, {"format", "unique-string"}},
+                {{"key", "lockId"}, {"label", "Lock ID"}, {"format", "integer"}},
+                {{"key", "operation"}, {"label", "Operation"}, {"format", "string"}}
+            })}
+        },
+        {
+            {"name", "TracyGpuZone"},
+            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"chartLabel", "{marker.data.name}"},
+            {"tooltipLabel", "GPU: {marker.data.name}"},
+            {"tableLabel", "{marker.data.name}"},
+            {"description", "Tracy GPU zone"},
+            {"fields", json::array({
+                {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
+                {{"key", "gpuStart"}, {"label", "GPU Start"}, {"format", "time"}},
+                {{"key", "gpuEnd"}, {"label", "GPU End"}, {"format", "time"}},
+                {{"key", "cpuStart"}, {"label", "CPU Start"}, {"format", "time"}},
+                {{"key", "cpuEnd"}, {"label", "CPU End"}, {"format", "time"}},
+                {{"key", "file"}, {"label", "File"}, {"format", "unique-string"}},
+                {{"key", "line"}, {"label", "Line"}, {"format", "integer"}},
+                {{"key", "function"}, {"label", "Function"}, {"format", "unique-string"}}
+            })}
+        },
+        {
+            {"name", "TracyFrame"},
+            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"chartLabel", "Frame {marker.data.frameNumber}"},
+            {"tooltipLabel", "Frame {marker.data.frameNumber} ({marker.data.fps} FPS)"},
+            {"tableLabel", "Frame {marker.data.frameNumber}"},
+            {"description", "Tracy frame marker"},
+            {"fields", json::array({
+                {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
+                {{"key", "frameNumber"}, {"label", "Frame"}, {"format", "integer"}},
+                {{"key", "duration"}, {"label", "Duration (ms)"}, {"format", "duration"}},
+                {{"key", "fps"}, {"label", "FPS"}, {"format", "number"}}
+            })}
+        }
+    });
+}
+
 int main(int argc, char** argv)
 {
 #ifdef _WIN32
@@ -768,9 +1201,6 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // Docs:     https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/docs-developer/processed-profile-format.md
-    // Versions: https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/docs-developer/CHANGELOG-formats.md
-    // Schema:   https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/src/types/profile.ts
     json profile;
     StringTable st;
     LibTable lt;
@@ -778,38 +1208,35 @@ int main(int argc, char** argv)
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
     const std::string& hostInfo = worker.GetHostInfo();
-    // Indexes into the `categories` array.
+
+    uint32_t otherCategory = 0;
     uint32_t userCategory = 1;
     uint32_t kernelCategory = 2;
+    uint32_t gpuCategory = 3;
+    uint32_t lockCategory = 4;
+    uint32_t messageCategory = 5;
+    uint32_t frameCategory = 6;
+
     profile["meta"] = {
         {"categories", json::array({
             {{"name", "Other"}, {"color", "grey"}, {"subcategories", json::array({"Other"})}},
             {{"name", "User"}, {"color", "yellow"}, {"subcategories", json::array({"Other"})}},
-            {{"name", "Kernel"}, {"color", "orange"}, {"subcategories", json::array({"Other"})}}
+            {{"name", "Kernel"}, {"color", "orange"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "GPU"}, {"color", "magenta"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "Lock"}, {"color", "red"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "Message"}, {"color", "blue"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "Frame"}, {"color", "green"}, {"subcategories", json::array({"Other"})}}
         })},
         {"debug", false},
         {"interval", ns_to_ms(worker.GetSamplingPeriod())},
-        {"markerSchema", json::array({
-            {
-                {"name", "TracyZone"},
-                {"display", json::array({"marker-chart", "marker-table"})},
-                {"chartLabel", "{marker.data.name}"},
-                {"tooltipLabel", "{marker.data.name}"},
-                {"tableLabel", "{marker.data.name}"},
-                {"description", "Emitted for Tracy zones"},
-                {"fields", json::array({
-                    {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
-                    {{"key", "text"}, {"label", "Text"}, {"description", "User text"}, {"format", "unique-string"}}
-                })}
-            }
-        })},
+        {"markerSchema", build_marker_schemas()},
         {"pausedRanges", json::array()},
         {"platform", hostInfo},
         {"preprocessedProfileVersion", 57},
         {"processType", 0},
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
         {"startTime", worker.GetCaptureTime() * 1000},
-        {"startTimeAsClockMonotonicNanosecondsSinceBoot", 0}, // TODO: platform specific
+        {"startTimeAsClockMonotonicNanosecondsSinceBoot", 0},
         {"symbolicated", true},
         {"version", 28},
         {"sampleUnits", {
@@ -817,7 +1244,6 @@ int main(int argc, char** argv)
             {"eventDelay", "ms"},
             {"threadCPUDelta", "µs"}
         }},
-
         {"usesOnlyOneStackType", true},
         {"sourceCodeIsNotOnSearchfox", true}
     };
@@ -826,17 +1252,24 @@ int main(int argc, char** argv)
         profile["meta"]["importedFrom"] = captureName;
     }
 
+    bool firstThread = true;
+
     for (const auto* td : worker.GetThreadData())
     {
         ThreadTables tables;
-        std::vector<MarkerData> marker_data;
         int64_t minTime = INT64_MAX;
         int64_t maxTime = 0;
 
-        collect_zones_recursive(worker, td->timeline, marker_data, minTime, maxTime);
-
-        process_markers(marker_data, tables, st, userCategory);
+        collect_zones_recursive(worker, td->timeline, tables, st, userCategory, minTime, maxTime);
+        process_messages(worker, tables, st, messageCategory, td->id, minTime, maxTime);
+        process_locks(worker, tables, st, lockCategory, td->id, minTime, maxTime);
         process_samples(worker, *td, tables, st, lt, minTime, maxTime, userCategory, kernelCategory);
+
+        if (firstThread)
+        {
+            process_frames(worker, tables, st, frameCategory, minTime, maxTime);
+            firstThread = false;
+        }
 
         if (minTime == INT64_MAX) minTime = 0;
 
@@ -866,7 +1299,57 @@ int main(int argc, char** argv)
         thread["stackTable"] = tables.stackTableToJson();
     }
 
+    for (const auto* gpuCtx : worker.GetGpuData())
+    {
+        if (!gpuCtx) continue;
+
+        for (const auto& [tid, gpuThread] : gpuCtx->threadData)
+        {
+            if (gpuThread.timeline.empty()) continue;
+
+            ThreadTables tables;
+            int64_t minTime = INT64_MAX;
+            int64_t maxTime = 0;
+
+            collect_gpu_zones_recursive(worker, gpuThread.timeline, tables, st, gpuCategory, minTime, maxTime);
+
+            if (tables.markers.empty()) continue;
+            if (minTime == INT64_MAX) minTime = 0;
+
+            std::string gpuName;
+            if (gpuCtx->name.Active())
+            {
+                gpuName = worker.GetString(gpuCtx->name);
+            }
+            else
+            {
+                gpuName = std::format("GPU Context {}", static_cast<int>(gpuCtx->type));
+            }
+
+            auto& thread = profile["threads"].emplace_back();
+            thread["name"] = gpuName;
+            thread["isMainThread"] = false;
+            thread["processType"] = "gpu";
+            thread["processName"] = captureProgram.empty() ? "Tracy" : captureProgram;
+            thread["processStartupTime"] = 0.0;
+            thread["processShutdownTime"] = nullptr;
+            thread["registerTime"] = ns_to_ms(minTime);
+            thread["unregisterTime"] = ns_to_ms(maxTime);
+            thread["pid"] = std::to_string(worker.GetPid());
+            thread["tid"] = std::format("gpu-{}", tid);
+
+            thread["frameTable"] = tables.frameTableToJson();
+            thread["funcTable"] = tables.funcTableToJson();
+            thread["markers"] = tables.markersToJson();
+            thread["nativeSymbols"] = tables.nativeSymbolsToJson();
+            thread["resourceTable"] = tables.resourceTableToJson();
+            thread["samples"] = tables.samplesToJson();
+            thread["stackTable"] = tables.stackTableToJson();
+        }
+    }
+
     profile["libs"] = lt.to_json();
+    profile["counters"] = build_counters(worker, st);
     profile["shared"] = {
         {"stringArray", st.to_json()}
     };
