@@ -6,17 +6,6 @@
 #include <optional>
 #include <string>
 
-#include <nlohmann/json.hpp>
-
-using json = nlohmann::json;
-
-enum class MarkerPhase {
-    Instant = 0,
-    Interval = 1,
-    IntervalStart = 2,
-    IntervalEnd = 3,
-};
-
 inline double ns_to_ms(int64_t ns)
 {
     return static_cast<double>(ns) / 1e6;

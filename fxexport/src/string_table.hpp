@@ -4,7 +4,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common.hpp"
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 
 class StringTable
 {

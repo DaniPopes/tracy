@@ -3,18 +3,16 @@
 #endif
 
 #include <chrono>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
 
+#include "../../getopt/getopt.h"
 #include "../../server/TracyFileRead.hpp"
 #include "../../server/TracyWorker.hpp"
-#include "../../getopt/getopt.h"
 
 #include "common.hpp"
 #include "lib_table.hpp"

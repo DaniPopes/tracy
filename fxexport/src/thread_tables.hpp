@@ -5,11 +5,22 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "../../server/TracyWorker.hpp"
 
-#include "common.hpp"
-#include "lib_table.hpp"
-#include "string_table.hpp"
+using json = nlohmann::json;
+
+class LibTable;
+class StringTable;
+
+enum class MarkerPhase
+{
+    Instant = 0,
+    Interval = 1,
+    IntervalStart = 2,
+    IntervalEnd = 3,
+};
 
 struct ThreadTables
 {

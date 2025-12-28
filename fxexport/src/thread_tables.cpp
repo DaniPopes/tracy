@@ -1,7 +1,12 @@
 #include "thread_tables.hpp"
 
-#include <cstdint>
+#include <algorithm>
 #include <format>
+
+#include "lib_table.hpp"
+#include "string_table.hpp"
+
+#include "common.hpp"
 
 uint32_t ThreadTables::getOrCreateResource(StringTable& st, LibTable& lt, const char* libName)
 {
