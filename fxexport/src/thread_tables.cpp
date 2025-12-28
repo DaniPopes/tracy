@@ -954,13 +954,15 @@ json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st, u
 
         const char* plotName = worker.GetString(plot->name);
 
+        // Convert absolute value to delta counts.
         json time = json::array();
         json count = json::array();
-        bool ints = plot->format != tracy::PlotValueFormatting::Percentage;
-        for (const auto& item : plot->data)
+        time.push_back(ns_to_ms(plot->data[0].time.Val()));
+        count.push_back(plot->data[0].val);
+        for (int i = 1; i < plot->data.size(); ++i)
         {
-            time.push_back(ns_to_ms(item.time.Val()));
-            count.push_back(item.val);
+            time.push_back(ns_to_ms(plot->data[i].time.Val()));
+            count.push_back(plot->data[i].val - plot->data[i - 1].val);
         }
 
         std::string category;
