@@ -105,6 +105,68 @@ private:
     std::unordered_map<std::string, uint32_t> m_map;
 };
 
+class LibTable
+{
+public:
+    int32_t intern(const char* name, uint64_t addr = 0, uint32_t size = 0)
+    {
+        if (!name || !name[0]) return -1;
+
+        std::string key(name);
+        auto it = m_map.find(key);
+        if (it != m_map.end())
+        {
+            auto& lib = m_libs[it->second];
+            // Update the start and end addresses.
+            if (addr != 0)
+            {
+                uint64_t end = addr + size;
+                if (lib.start == 0 || addr < lib.start) lib.start = addr;
+                if (end > lib.end) lib.end = end;
+            }
+            return it->second;
+        }
+
+        int32_t idx = static_cast<int32_t>(m_libs.size());
+        uint64_t start = addr;
+        uint64_t end = addr + size;
+        m_libs.push_back({ key, start, end });
+        m_map[key] = idx;
+        return idx;
+    }
+
+    json to_json() const
+    {
+        json arr = json::array();
+        for (const auto& lib : m_libs)
+        {
+            arr.push_back({
+                {"arch", nullptr},
+                {"name", lib.name},
+                {"path", lib.name},
+                {"debugName", lib.name},
+                {"debugPath", lib.name},
+                {"start", lib.start},
+                {"end", lib.end},
+                {"breakpadId", nullptr},
+                {"codeId", nullptr},
+            });
+        }
+        return arr;
+    }
+
+private:
+    struct LibEntry
+    {
+        std::string name;
+        uint64_t start;
+        uint64_t end;
+    };
+
+    std::vector<LibEntry> m_libs;
+    std::unordered_map<std::string, int32_t> m_map;
+};
+
 struct MarkerData
 {
     const char* name;
@@ -270,7 +332,7 @@ struct ThreadTables
     std::unordered_map<uint64_t, uint32_t> frameKeyToFrame;
     std::unordered_map<uint64_t, int32_t> stackKeyToStack;
 
-    uint32_t getOrCreateResource(StringTable& st, const char* libName)
+    uint32_t getOrCreateResource(StringTable& st, LibTable& lt, const char* libName)
     {
         std::string key(libName ? libName : "");
         auto it = libNameToResource.find(key);
@@ -278,22 +340,30 @@ struct ThreadTables
 
         uint32_t idx = static_cast<uint32_t>(resources.size());
         resources.push_back({
-            -1,
+            lt.intern(libName),
             st.intern(libName)
         });
         libNameToResource[key] = idx;
         return idx;
     }
 
-    uint32_t getOrCreateNativeSymbol(StringTable& st, uint64_t symAddr, const char* name, const char* imageName, uint32_t size)
+    uint32_t getOrCreateNativeSymbol(StringTable& st, LibTable& lt, uint64_t symAddr, const char* name, const char* imageName, uint32_t size)
     {
         auto it = symAddrToNativeSymbol.find(symAddr);
-        if (it != symAddrToNativeSymbol.end()) return it->second;
+        if (it != symAddrToNativeSymbol.end())
+        {
+            if (imageName && imageName[0])
+            {
+                lt.intern(imageName, symAddr, size);
+            }
+            return it->second;
+        }
 
         int32_t libIdx = -1;
         if (imageName && imageName[0])
         {
-            libIdx = static_cast<int32_t>(getOrCreateResource(st, imageName));
+            lt.intern(imageName, symAddr, size);
+            libIdx = static_cast<int32_t>(getOrCreateResource(st, lt, imageName));
         }
 
         uint32_t idx = static_cast<uint32_t>(nativeSymbols.size());
@@ -324,7 +394,7 @@ struct ThreadTables
         return idx;
     }
 
-    uint32_t getOrCreateFrame(StringTable& st, uint64_t symAddr, const char* name, const char* fileName,
+    uint32_t getOrCreateFrame(StringTable& st, LibTable& lt, uint64_t symAddr, const char* name, const char* fileName,
                                uint32_t line, uint32_t column, uint32_t inlineDepth,
                                const char* imageName, uint32_t symSize, uint32_t category)
     {
@@ -335,11 +405,11 @@ struct ThreadTables
         int32_t resourceIdx = -1;
         if (imageName && imageName[0])
         {
-            resourceIdx = static_cast<int32_t>(getOrCreateResource(st, imageName));
+            resourceIdx = static_cast<int32_t>(getOrCreateResource(st, lt, imageName));
         }
 
         uint32_t funcIdx = getOrCreateFunc(st, symAddr, name, fileName, line, resourceIdx);
-        uint32_t nativeSymbolIdx = getOrCreateNativeSymbol(st, symAddr, name, imageName, symSize);
+        uint32_t nativeSymbolIdx = getOrCreateNativeSymbol(st, lt, symAddr, name, imageName, symSize);
 
         uint32_t idx = static_cast<uint32_t>(frames.size());
         frames.push_back({
@@ -599,6 +669,7 @@ static void process_samples(
     const tracy::ThreadData& td,
     ThreadTables& tables,
     StringTable& st,
+    LibTable& lt,
     int64_t& minTime,
     int64_t& maxTime,
     uint32_t userCategory,
@@ -648,7 +719,7 @@ static void process_samples(
                 uint32_t inlineDepth = frameData->size - j;
 
                 uint32_t frameIdx = tables.getOrCreateFrame(
-                    st, symAddr, funcName, fileName,
+                    st, lt, symAddr, funcName, fileName,
                     line, 0, inlineDepth,
                     imageName, symSize, category
                 );
@@ -700,6 +771,7 @@ int main(int argc, char** argv)
 
     json profile;
     StringTable st;
+    LibTable lt;
 
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
@@ -753,9 +825,6 @@ int main(int argc, char** argv)
         profile["meta"]["importedFrom"] = captureName;
     }
 
-    // TODO
-    profile["libs"] = json::array();
-
     for (const auto* td : worker.GetThreadData())
     {
         ThreadTables tables;
@@ -766,7 +835,7 @@ int main(int argc, char** argv)
         collect_zones_recursive(worker, td->timeline, marker_data, minTime, maxTime);
 
         process_markers(marker_data, tables, st, userCategory);
-        process_samples(worker, *td, tables, st, minTime, maxTime, userCategory, kernelCategory);
+        process_samples(worker, *td, tables, st, lt, minTime, maxTime, userCategory, kernelCategory);
 
         if (minTime == INT64_MAX) minTime = 0;
 
@@ -795,6 +864,7 @@ int main(int argc, char** argv)
         thread["stackTable"] = tables.stackTableToJson();
     }
 
+    profile["libs"] = lt.to_json();
     profile["shared"] = {
         {"stringArray", st.to_json()}
     };
