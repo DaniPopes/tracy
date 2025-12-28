@@ -143,7 +143,7 @@ struct ThreadTables
     json threadToJson() const;
 
     static json buildMarkerSchemas();
-    static json buildCounters(const tracy::Worker& worker, StringTable& st);
+    static json buildCounters(const tracy::Worker& worker, StringTable& st, uint64_t mainThreadIndex);
 
 private:
     void collectZone(

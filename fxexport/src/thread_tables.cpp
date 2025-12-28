@@ -1,5 +1,6 @@
 #include "thread_tables.hpp"
 
+#include <cstdint>
 #include <format>
 
 uint32_t ThreadTables::getOrCreateResource(StringTable& st, LibTable& lt, const char* libName)
@@ -816,7 +817,7 @@ json ThreadTables::buildMarkerSchemas()
     });
 }
 
-json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st)
+json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st, uint64_t mainThreadIndex)
 {
     json counters = json::array();
 
@@ -830,6 +831,7 @@ json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st)
 
         json time = json::array();
         json count = json::array();
+        bool ints = plot->format != tracy::PlotValueFormatting::Percentage;
         for (const auto& item : plot->data)
         {
             time.push_back(ns_to_ms(item.time.Val()));
@@ -863,7 +865,7 @@ json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st)
             {"category", category},
             {"description", description},
             {"pid", std::to_string(worker.GetPid())},
-            {"mainThreadIndex", nullptr},
+            {"mainThreadIndex", mainThreadIndex},
             {"samples", {
                 {"time", time},
                 {"count", count},

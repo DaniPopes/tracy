@@ -37,3 +37,6 @@ profiler/build/wasm/embed.tracy
 examples/ToyPathTracer/Windows/TestCpu
 examples/ToyPathTracer/Windows/x64
 *.user
+
+*.tracy
+/*.json*

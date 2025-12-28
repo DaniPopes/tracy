@@ -163,8 +163,8 @@ int main(int argc, char** argv)
         profile["meta"]["importedFrom"] = captureName;
     }
 
-    bool firstThread = true;
-
+    uint64_t mainThreadIndex = 0;
+    uint64_t threadIndex = 0;
     for (const auto* td : worker.GetThreadData())
     {
         ThreadTables tables;
@@ -174,20 +174,27 @@ int main(int argc, char** argv)
         tables.processLocks(worker, st, lockCategory, td->id);
         tables.processSamples(worker, *td, st, lt, userCategory, kernelCategory);
 
-        if (firstThread)
+        if (threadIndex == 0)
         {
             tables.processFrames(worker, st, frameCategory);
-            firstThread = false;
         }
 
         const char* threadName_ = worker.GetThreadName(td->id);
         std::string threadName = threadName_ ? threadName_ : std::format("Thread <{}>", td->id);
         auto pid_ = worker.GetPidFromTid(td->id);
         auto pid = pid_ != 0 ? pid_ : worker.GetPid();
+        bool isMainThread = threadName == "Main thread" || pid == td->id;
 
         auto& thread = profile["threads"].emplace_back();
+
+        if ((isMainThread && pid == worker.GetPid()) || (mainThreadIndex == 0 && isMainThread)) {
+            mainThreadIndex = threadIndex;
+            // TODO
+            thread["nativeAllocations"] = json::array();
+        }
+
         thread["name"] = threadName;
-        thread["isMainThread"] = threadName == "Main thread" || pid == td->id;
+        thread["isMainThread"] = isMainThread;
         thread["processType"] = "default";
         thread["processName"] = captureProgram.empty() ? "Tracy" : captureProgram;
         thread["processStartupTime"] = 0.0;
@@ -196,6 +203,8 @@ int main(int argc, char** argv)
         thread["tid"] = td->id;
         thread["showMarkersInTimeline"] = true;
         thread.merge_patch(tables.threadToJson());
+
+        threadIndex++;
     }
 
     for (const auto* gpuCtx : worker.GetGpuData())
@@ -236,7 +245,7 @@ int main(int argc, char** argv)
         }
     }
 
-    profile["counters"] = ThreadTables::buildCounters(worker, st);
+    profile["counters"] = ThreadTables::buildCounters(worker, st, mainThreadIndex);
 
     profile["libs"] = lt.to_json();
     profile["shared"] = {
