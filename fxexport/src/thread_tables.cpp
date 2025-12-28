@@ -884,11 +884,12 @@ json ThreadTables::threadToJson() const
 
 json ThreadTables::buildMarkerSchemas()
 {
-    json display = json::array({"marker-chart", "marker-table", "timeline-overview"});
+    json display = json::array({"marker-chart", "marker-table"});
+    json displayWithTimeline = json::array({"marker-chart", "marker-table", "timeline-overview"});
     return json::array({
         {
             {"name", "TracyZone"},
-            {"display", display},
+            {"display", displayWithTimeline},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "{marker.data.name}"},
             {"tableLabel", "{marker.data.name}"},
