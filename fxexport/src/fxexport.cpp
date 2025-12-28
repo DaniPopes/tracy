@@ -768,6 +768,9 @@ int main(int argc, char** argv)
     }
 #endif
 
+    // Docs:     https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/docs-developer/processed-profile-format.md
+    // Versions: https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/docs-developer/CHANGELOG-formats.md
+    // Schema:   https://github.com/firefox-devtools/profiler/blob/0d72df877672802eae9e48da1a40511b74b33010/src/types/profile.ts
     json profile;
     StringTable st;
     LibTable lt;
@@ -802,7 +805,6 @@ int main(int argc, char** argv)
         })},
         {"pausedRanges", json::array()},
         {"platform", hostInfo},
-        // https://github.com/firefox-devtools/profiler/blob/main/docs-developer/CHANGELOG-formats.md
         {"preprocessedProfileVersion", 57},
         {"processType", 0},
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
