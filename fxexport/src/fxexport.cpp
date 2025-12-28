@@ -281,12 +281,6 @@ int main(int argc, char** argv)
             mainThreadIndex = threadIndex;
         }
 
-        json allocJson = tables.nativeAllocationsToJson();
-        if (!allocJson.is_null())
-        {
-            thread["nativeAllocations"] = std::move(allocJson);
-        }
-
         thread["name"] = threadName;
         thread["isMainThread"] = isMainThread;
         thread["processType"] = "default";

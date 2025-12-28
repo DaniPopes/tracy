@@ -863,7 +863,7 @@ json ThreadTables::markersToJson() const
 
 json ThreadTables::threadToJson() const
 {
-    return {
+    json result = {
         {"frameTable", frameTableToJson()},
         {"funcTable", funcTableToJson()},
         {"markers", markersToJson()},
@@ -874,6 +874,12 @@ json ThreadTables::threadToJson() const
         {"stackTable", stackTableToJson()},
         {"unregisterTime", ns_to_ms(maxTime)}
     };
+    json allocJson = nativeAllocationsToJson();
+    if (!allocJson.is_null())
+    {
+        result["nativeAllocations"] = std::move(allocJson);
+    }
+    return result;
 }
 
 json ThreadTables::buildMarkerSchemas()
