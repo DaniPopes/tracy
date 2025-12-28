@@ -525,6 +525,103 @@ void ThreadTables::processSamples(
     }
 }
 
+void ThreadTables::processAllocations(
+    const tracy::Worker& worker,
+    StringTable& st,
+    LibTable& lt,
+    uint32_t category)
+{
+    for (const auto& [memName, memData] : worker.GetMemNameMap())
+    {
+        if (!memData) continue;
+
+        for (const auto& ev : memData->data)
+        {
+            int64_t allocTime = ev.TimeAlloc();
+            int64_t freeTime = ev.TimeFree();
+            int64_t size = static_cast<int64_t>(ev.Size());
+            uint64_t ptr = ev.Ptr();
+            uint32_t csAllocIdx = ev.CsAlloc();
+            uint32_t csFreeIdx = ev.csFree.Val();
+
+            uint64_t allocThreadId = worker.DecompressThread(ev.ThreadAlloc());
+            uint64_t freeThreadId = worker.DecompressThread(ev.ThreadFree());
+
+            auto buildStack = [&](uint32_t csIdx) -> int32_t {
+                if (csIdx == 0) return -1;
+
+                const auto& callstack = worker.GetCallstack(csIdx);
+                if (callstack.empty()) return -1;
+
+                int32_t stackIdx = -1;
+                for (size_t i = callstack.size(); i > 0; i--)
+                {
+                    auto frameId = callstack[i - 1];
+                    auto frameData = worker.GetCallstackFrame(frameId);
+                    if (!frameData) continue;
+
+                    uint64_t canonicalAddr = worker.GetCanonicalPointer(frameId);
+                    const char* imageName = frameData->imageName.Active() ? worker.GetString(frameData->imageName) : "";
+
+                    for (uint8_t j = frameData->size; j > 0; j--)
+                    {
+                        const auto& frame = frameData->data[j - 1];
+                        const char* funcName = worker.GetString(frame.name);
+                        const char* fileName = worker.GetString(frame.file);
+                        uint32_t line = frame.line;
+                        uint64_t symAddr = frame.symAddr;
+
+                        uint32_t symSize = 0;
+                        auto symData = worker.GetSymbolData(symAddr);
+                        if (symData) symSize = symData->size.Val();
+
+                        uint32_t inlineDepth = frameData->size - j;
+
+                        uint32_t frameIdx = getOrCreateFrame(
+                            st, lt, symAddr, funcName, fileName,
+                            line, 0, inlineDepth,
+                            imageName, symSize, category
+                        );
+
+                        stackIdx = getOrCreateStack(stackIdx, frameIdx);
+                    }
+                }
+                return stackIdx;
+            };
+
+            minTime = std::min(minTime, allocTime);
+            maxTime = std::max(maxTime, allocTime);
+
+            allocations.push_back({
+                ns_to_ms(allocTime),
+                size,
+                buildStack(csAllocIdx),
+                ptr,
+                allocThreadId
+            });
+
+            if (freeTime >= 0)
+            {
+                minTime = std::min(minTime, freeTime);
+                maxTime = std::max(maxTime, freeTime);
+
+                allocations.push_back({
+                    ns_to_ms(freeTime),
+                    -size,
+                    buildStack(csFreeIdx),
+                    ptr,
+                    freeThreadId
+                });
+            }
+        }
+    }
+
+    std::stable_sort(allocations.begin(), allocations.end(),
+        [](const AllocationEntry& a, const AllocationEntry& b) {
+            return a.time < b.time;
+        });
+}
+
 json ThreadTables::frameTableToJson() const
 {
     json address = json::array();
@@ -687,6 +784,34 @@ json ThreadTables::samplesToJson() const
         {"weight", weight},
         {"weightType", "samples"},
         {"threadCPUDelta", threadCPUDelta}
+    };
+}
+
+json ThreadTables::nativeAllocationsToJson() const
+{
+    json time = json::array();
+    json weight = json::array();
+    json stack = json::array();
+    json memoryAddress = json::array();
+    json threadId = json::array();
+
+    for (const auto& a : allocations)
+    {
+        time.push_back(a.time);
+        weight.push_back(a.weight);
+        stack.push_back(a.stackIdx >= 0 ? json(a.stackIdx) : json(nullptr));
+        memoryAddress.push_back(a.memoryAddress);
+        threadId.push_back(a.threadId);
+    }
+
+    return {
+        {"time", time},
+        {"weight", weight},
+        {"weightType", "bytes"},
+        {"stack", stack},
+        {"memoryAddress", memoryAddress},
+        {"threadId", threadId},
+        {"length", allocations.size()}
     };
 }
 

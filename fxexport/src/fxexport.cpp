@@ -127,6 +127,7 @@ int main(int argc, char** argv)
     uint32_t lockCategory = 4;
     uint32_t messageCategory = 5;
     uint32_t frameCategory = 6;
+    uint32_t memoryCategory = 7;
 
     profile["meta"] = {
         {"categories", json::array({
@@ -136,7 +137,8 @@ int main(int argc, char** argv)
             {{"name", "GPU"}, {"color", "magenta"}, {"subcategories", json::array({"Other"})}},
             {{"name", "Lock"}, {"color", "red"}, {"subcategories", json::array({"Other"})}},
             {{"name", "Message"}, {"color", "blue"}, {"subcategories", json::array({"Other"})}},
-            {{"name", "Frame"}, {"color", "green"}, {"subcategories", json::array({"Other"})}}
+            {{"name", "Frame"}, {"color", "green"}, {"subcategories", json::array({"Other"})}},
+            {{"name", "Memory"}, {"color", "purple"}, {"subcategories", json::array({"Other"})}}
         })},
         {"debug", false},
         {"interval", ns_to_ms(worker.GetSamplingPeriod())},
@@ -189,8 +191,14 @@ int main(int argc, char** argv)
 
         if ((isMainThread && pid == worker.GetPid()) || (mainThreadIndex == 0 && isMainThread)) {
             mainThreadIndex = threadIndex;
-            // TODO
-            thread["nativeAllocations"] = json::array();
+
+            ThreadTables allocTables;
+            allocTables.processAllocations(worker, st, lt, memoryCategory);
+            json allocJson = allocTables.nativeAllocationsToJson();
+            if (!allocJson.is_null())
+            {
+                thread["nativeAllocations"] = std::move(allocJson);
+            }
         }
 
         thread["name"] = threadName;

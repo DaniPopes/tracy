@@ -60,6 +60,15 @@ struct ThreadTables
         double weight;
     };
 
+    struct AllocationEntry
+    {
+        double time;
+        int64_t weight;
+        int32_t stackIdx;
+        uint64_t memoryAddress;
+        uint64_t threadId;
+    };
+
     struct MarkerEntry
     {
         std::string type;
@@ -77,6 +86,7 @@ struct ThreadTables
     std::vector<ResourceEntry> resources;
     std::vector<StackEntry> stacks;
     std::vector<SampleEntry> samples;
+    std::vector<AllocationEntry> allocations;
     std::vector<MarkerEntry> markers;
 
     int64_t minTime = INT64_MAX;
@@ -133,12 +143,19 @@ struct ThreadTables
         uint32_t userCategory,
         uint32_t kernelCategory);
 
+    void processAllocations(
+        const tracy::Worker& worker,
+        StringTable& st,
+        LibTable& lt,
+        uint32_t category);
+
     json frameTableToJson() const;
     json funcTableToJson() const;
     json nativeSymbolsToJson() const;
     json resourceTableToJson() const;
     json stackTableToJson() const;
     json samplesToJson() const;
+    json nativeAllocationsToJson() const;
     json markersToJson() const;
     json threadToJson() const;
 
