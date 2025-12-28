@@ -254,6 +254,7 @@ int main(int argc, char** argv)
     }
 
     profile["counters"] = ThreadTables::buildCounters(worker, st, mainThreadIndex);
+    profile["meta"]["initialSelectedThreads"] = json::array({mainThreadIndex});
 
     profile["libs"] = lt.to_json();
     profile["shared"] = {
