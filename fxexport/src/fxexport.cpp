@@ -3,9 +3,12 @@
 #endif
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -76,6 +79,77 @@ static Args parse_args(int argc, char** argv)
     return args;
 }
 
+struct HostInfo {
+    std::string os;
+    std::string compiler;
+    std::string user;
+    std::string arch;
+    std::string cpu;
+    uint64_t cpu_cores;
+    uint64_t ram;
+};
+
+HostInfo parseHostInfo(const std::string& input) {
+    /*
+OS: Linux 6.0.0-1-MANJARO
+Compiler: gcc 12.2.0
+User: wolf@mimir
+Arch: x64
+CPU: 11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz
+CPU cores: 8
+RAM: 15707 MB
+    */
+
+    HostInfo info;
+    std::istringstream stream(input);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        size_t colonPos = line.find(':');
+        if (colonPos != std::string::npos) {
+            std::string key = line.substr(0, colonPos);
+            std::string value = line.substr(colonPos + 1);
+
+            // Trim leading whitespace from value
+            size_t start = value.find_first_not_of(" \t");
+            if (start != std::string::npos) {
+                value = value.substr(start);
+            }
+
+            if (key == "OS") info.os = value;
+            else if (key == "Compiler") info.compiler = value;
+            else if (key == "User") info.user = value;
+            else if (key == "Arch") info.arch = value;
+            else if (key == "CPU") info.cpu = value;
+            else if (key == "CPU cores" && value != "unknown") info.cpu_cores = std::stoull(value);
+            else if (key == "RAM" && value != "unknown") {
+                // MB -> bytes
+                size_t end = value.find(' ');
+                if (end != std::string::npos) {
+                    info.ram = std::stoull(value.substr(0, end)) * 1024 * 1024;
+                }
+            }
+        }
+    }
+
+    return info;
+}
+
+std::string formatAppInfo(tracy::Worker& worker) {
+    auto& appInfos = worker.GetAppInfo();
+    if (appInfos.empty()) return "<empty>";
+
+    std::string appInfo;
+    bool first = true;
+    for (auto& infoRef : appInfos) {
+        auto info = worker.GetString(infoRef);
+        if (!first) appInfo += " | ";
+        appInfo += info;
+        first = false;
+    }
+    return appInfo;
+}
+
 int main(int argc, char** argv)
 {
 #ifdef _WIN32
@@ -119,7 +193,8 @@ int main(int argc, char** argv)
 
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
-    const std::string& hostInfo = worker.GetHostInfo();
+    auto hostInfo = parseHostInfo(worker.GetHostInfo());
+    auto appInfo = formatAppInfo(worker);
 
     uint32_t userCategory = 1;
     uint32_t kernelCategory = 2;
@@ -144,7 +219,11 @@ int main(int argc, char** argv)
         {"interval", ns_to_ms(worker.GetSamplingPeriod())},
         {"markerSchema", ThreadTables::buildMarkerSchemas()},
         {"pausedRanges", json::array()},
-        {"platform", hostInfo},
+        {"abi", hostInfo.arch + "-" + hostInfo.compiler},
+        {"oscpu", hostInfo.os},
+        {"mainMemory", hostInfo.ram},
+        {"CPUName", hostInfo.cpu},
+        {"physicalCPUs", hostInfo.cpu_cores},
         {"preprocessedProfileVersion", 57},
         {"processType", 0},
         {"product", captureProgram.empty() ? "Tracy" : captureProgram},
@@ -158,7 +237,17 @@ int main(int argc, char** argv)
             {"threadCPUDelta", "µs"}
         }},
         {"usesOnlyOneStackType", true},
-        {"sourceCodeIsNotOnSearchfox", true}
+        {"sourceCodeIsNotOnSearchfox", true},
+        {"extra", {
+            {
+                {"label", "Tracy info"},
+                {"entries", json::array({
+                    {{"label", "User"}, {"format", "string"}, {"value", hostInfo.user}},
+                    {{"label", "Compiler"}, {"format", "string"}, {"value", hostInfo.compiler}},
+                    {{"label", "Application info"}, {"format", "string"}, {"value", appInfo}},
+                })}
+            }
+        }},
     };
     if (!captureName.empty())
     {
