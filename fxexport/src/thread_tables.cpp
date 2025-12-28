@@ -794,6 +794,9 @@ json ThreadTables::samplesToJson() const
 
 json ThreadTables::nativeAllocationsToJson() const
 {
+    if (allocations.empty())
+        return nullptr;
+
     json time = json::array();
     json weight = json::array();
     json stack = json::array();
