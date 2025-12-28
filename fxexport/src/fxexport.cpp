@@ -124,6 +124,11 @@ static double ns_to_ms(int64_t ns)
     return static_cast<double>(ns) / 1e6;
 }
 
+static bool is_kernel_address(uint64_t addr)
+{
+    return (addr >> 63) != 0;
+}
+
 static void collect_zone(
     const tracy::Worker& worker,
     const tracy::ZoneEvent& zone,
@@ -576,7 +581,8 @@ static void process_samples(
     StringTable& st,
     int64_t& minTime,
     int64_t& maxTime,
-    uint32_t userCategory)
+    uint32_t userCategory,
+    uint32_t kernelCategory)
 {
     for (const auto& sample : td.samples)
     {
@@ -595,8 +601,12 @@ static void process_samples(
 
         for (size_t i = callstack.size(); i > 0; i--)
         {
-            auto frameData = worker.GetCallstackFrame(callstack[i - 1]);
+            auto frameId = callstack[i - 1];
+            auto frameData = worker.GetCallstackFrame(frameId);
             if (!frameData) continue;
+
+            uint64_t canonicalAddr = worker.GetCanonicalPointer(frameId);
+            uint32_t category = is_kernel_address(canonicalAddr) ? kernelCategory : userCategory;
 
             const char* imageName = frameData->imageName.Active() ? worker.GetString(frameData->imageName) : "";
 
@@ -620,7 +630,7 @@ static void process_samples(
                 uint32_t frameIdx = tables.getOrCreateFrame(
                     st, symAddr, funcName, fileName,
                     line, 0, inlineDepth,
-                    imageName, symSize, userCategory
+                    imageName, symSize, category
                 );
 
                 stackIdx = tables.getOrCreateStack(stackIdx, frameIdx);
@@ -674,7 +684,8 @@ int main(int argc, char** argv)
     const std::string& captureName = worker.GetCaptureName();
     const std::string& captureProgram = worker.GetCaptureProgram();
     const std::string& hostInfo = worker.GetHostInfo();
-    uint64_t userCategory = 1;
+    uint32_t userCategory = 1;
+    uint32_t kernelCategory = 2;
     profile["meta"] = {
         {"categories", json::array({
             {{"name", "Other"}, {"color", "grey"}, {"subcategories", json::array({"Other"})}},
@@ -690,7 +701,7 @@ int main(int argc, char** argv)
                 {"chartLabel", "{marker.data.name}"},
                 {"tooltipLabel", "{marker.data.name}"},
                 {"tableLabel", "{marker.data.name}"},
-                // {"description", "Emitted for marker spans in a markers text file."},
+                {"description", "Emitted for Tracy zones."},
                 {"fields", json::array({
                     {
                         {"key", "name"}, {"label", "Name"}, {"format", "unique-string"}
@@ -733,8 +744,8 @@ int main(int argc, char** argv)
 
         collect_zones_recursive(worker, td->timeline, marker_data, minTime, maxTime);
 
-        process_markers(marker_data, tables, st, static_cast<uint32_t>(userCategory));
-        process_samples(worker, *td, tables, st, minTime, maxTime, static_cast<uint32_t>(userCategory));
+        process_markers(marker_data, tables, st, userCategory);
+        process_samples(worker, *td, tables, st, minTime, maxTime, userCategory, kernelCategory);
 
         if (minTime == INT64_MAX) minTime = 0;
 
