@@ -153,9 +153,8 @@ void ThreadTables::collectZone(
         markerData["text"] = st.intern(text);
     }
     if (hasColor)
-    {
-        markerData["color"] = std::format("#{:06x}", color_to_rgb(color));
-    }
+        if (auto graphColor = toGraphColor(color))
+            markerData["color"] = graphColor;
     if (file && file[0])
     {
         markerData["file"] = st.intern(file);
@@ -314,9 +313,8 @@ void ThreadTables::processMessages(
             {"text", st.intern(text)}
         };
         if (color != 0)
-        {
-            markerData["color"] = std::format("#{:06x}", color_to_rgb(color));
-        }
+            if (auto graphColor = toGraphColor(color))
+                markerData["color"] = graphColor;
 
         markers.push_back({
             "TracyMessage",
@@ -738,18 +736,20 @@ json ThreadTables::threadToJson() const
 
 json ThreadTables::buildMarkerSchemas()
 {
+    json display = json::array({"marker-chart", "marker-table", "timeline-overview"});
     return json::array({
         {
             {"name", "TracyZone"},
-            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"display", display},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "{marker.data.name}"},
             {"tableLabel", "{marker.data.name}"},
             {"description", "Tracy instrumentation zone"},
+            {"colorField", "color"},
             {"fields", json::array({
                 {{"key", "name"}, {"label", "Name"}, {"format", "unique-string"}},
                 {{"key", "text"}, {"label", "Text"}, {"format", "unique-string"}},
-                {{"key", "color"}, {"label", "Color"}, {"format", "string"}},
+                {{"key", "color"}, {"label", "Color"}, {"format", "string"}, {"hide", true}},
                 {{"key", "file"}, {"label", "File"}, {"format", "unique-string"}},
                 {{"key", "line"}, {"label", "Line"}, {"format", "integer"}},
                 {{"key", "function"}, {"label", "Function"}, {"format", "unique-string"}}
@@ -757,11 +757,12 @@ json ThreadTables::buildMarkerSchemas()
         },
         {
             {"name", "TracyMessage"},
-            {"display", json::array({"marker-chart", "marker-table"})},
+            {"display", display},
             {"chartLabel", "{marker.data.text}"},
             {"tooltipLabel", "{marker.data.text}"},
             {"tableLabel", "{marker.data.text}"},
             {"description", "Tracy log message"},
+            {"colorField", "color"},
             {"fields", json::array({
                 {{"key", "text"}, {"label", "Message"}, {"format", "unique-string"}},
                 {{"key", "color"}, {"label", "Color"}, {"format", "string"}}
@@ -769,7 +770,7 @@ json ThreadTables::buildMarkerSchemas()
         },
         {
             {"name", "TracyLock"},
-            {"display", json::array({"marker-chart", "marker-table"})},
+            {"display", display},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "Lock: {marker.data.name} ({marker.data.operation})"},
             {"tableLabel", "{marker.data.name}"},
@@ -782,7 +783,7 @@ json ThreadTables::buildMarkerSchemas()
         },
         {
             {"name", "TracyGpuZone"},
-            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"display", display},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "GPU: {marker.data.name}"},
             {"tableLabel", "{marker.data.name}"},
@@ -800,7 +801,7 @@ json ThreadTables::buildMarkerSchemas()
         },
         {
             {"name", "TracyFrame"},
-            {"display", json::array({"marker-chart", "marker-table", "timeline-overview"})},
+            {"display", display},
             {"chartLabel", "Frame {marker.data.frameNumber}"},
             {"tooltipLabel", "Frame {marker.data.frameNumber} ({marker.data.fps} FPS)"},
             {"tableLabel", "Frame {marker.data.frameNumber}"},
@@ -862,7 +863,7 @@ json ThreadTables::buildCounters(const tracy::Worker& worker, StringTable& st)
             {"category", category},
             {"description", description},
             {"pid", std::to_string(worker.GetPid())},
-            {"mainThreadIndex", 0},
+            {"mainThreadIndex", nullptr},
             {"samples", {
                 {"time", time},
                 {"count", count},

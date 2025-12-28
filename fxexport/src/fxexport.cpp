@@ -194,6 +194,7 @@ int main(int argc, char** argv)
         thread["processShutdownTime"] = nullptr;
         thread["pid"] = std::to_string(pid);
         thread["tid"] = td->id;
+        thread["showMarkersInTimeline"] = true;
         thread.merge_patch(tables.threadToJson());
     }
 
@@ -230,6 +231,7 @@ int main(int argc, char** argv)
             thread["processShutdownTime"] = nullptr;
             thread["pid"] = std::to_string(worker.GetPid());
             thread["tid"] = std::format("gpu-{}", tid);
+            thread["showMarkersInTimeline"] = true;
             thread.merge_patch(tables.threadToJson());
         }
     }

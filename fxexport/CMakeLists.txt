@@ -9,11 +9,11 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/version.cmake)
 set(CMAKE_CXX_STANDARD 20)
 
 set(CMAKE_CXX_FLAGS_DEBUG
-    "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer -g")
+    "${CMAKE_CXX_FLAGS_DEBUG} -O1 -fno-omit-frame-pointer -g")
 set(CMAKE_C_FLAGS_DEBUG
-    "${CMAKE_C_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer -g")
+    "${CMAKE_C_FLAGS_DEBUG} -O1 -fno-omit-frame-pointer -g")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG
-    "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+    "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fuse-ld=mold")
 
 project(
     tracy-fxexport
