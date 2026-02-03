@@ -151,7 +151,7 @@ void ThreadTables::collectZone(
     uint32_t line = srcloc.line;
 
     json markerData = {
-        {"type", "TracyZone"},
+        {"type", "Zone"},
         {"name", st.intern(name)}
     };
     if (text)
@@ -172,9 +172,9 @@ void ThreadTables::collectZone(
     }
 
     markers.push_back({
-        "TracyZone",
+        "Zone",
         category,
-        st.intern("TracyZone"),
+        st.intern("Zone"),
         ns_to_ms(start),
         ns_to_ms(end),
         MarkerPhase::Interval,
@@ -235,7 +235,7 @@ void ThreadTables::collectGpuZone(
     uint32_t line = srcloc.line;
 
     json markerData = {
-        {"type", "TracyGpuZone"},
+        {"type", "GpuZone"},
         {"name", st.intern(name)},
         {"gpuStart", ns_to_ms(gpuStart)},
         {"gpuEnd", ns_to_ms(gpuEnd)},
@@ -253,9 +253,9 @@ void ThreadTables::collectGpuZone(
     }
 
     markers.push_back({
-        "TracyGpuZone",
+        "GpuZone",
         category,
-        st.intern("TracyGpuZone"),
+        st.intern("GpuZone"),
         ns_to_ms(gpuStart),
         ns_to_ms(gpuEnd),
         MarkerPhase::Interval,
@@ -315,7 +315,7 @@ void ThreadTables::processMessages(
         maxTime = std::max(maxTime, time);
 
         json markerData = {
-            {"type", "TracyMessage"},
+            {"type", "Message"},
             {"text", st.intern(text)}
         };
         if (color != 0)
@@ -323,9 +323,9 @@ void ThreadTables::processMessages(
                 markerData["color"] = graphColor;
 
         markers.push_back({
-            "TracyMessage",
+            "Message",
             category,
-            st.intern("TracyMessage"),
+            st.intern("Message"),
             ns_to_ms(time),
             ns_to_ms(time),
             MarkerPhase::Instant,
@@ -388,16 +388,16 @@ void ThreadTables::processLocks(
                 {
                     bool isShared = (type == tracy::LockEvent::Type::ObtainShared);
                     json markerData = {
-                        {"type", "TracyLock"},
+                        {"type", "Lock"},
                         {"name", st.intern(lockName)},
                         {"lockId", lockId},
                         {"operation", isShared ? "wait_shared" : "wait"}
                     };
 
                     markers.push_back({
-                        "TracyLock",
+                        "Lock",
                         category,
-                        st.intern("TracyLock"),
+                        st.intern("Lock"),
                         ns_to_ms(waitStart),
                         ns_to_ms(time),
                         MarkerPhase::Interval,
@@ -442,7 +442,7 @@ void ThreadTables::processFrames(
         double fps = durationMs > 0 ? 1000.0 / durationMs : 0;
 
         json markerData = {
-            {"type", "TracyFrame"},
+            {"type", "Frame"},
             {"name", st.intern(frameName)},
             {"frameNumber", static_cast<uint64_t>(i)},
             {"duration", durationMs},
@@ -450,9 +450,9 @@ void ThreadTables::processFrames(
         };
 
         markers.push_back({
-            "TracyFrame",
+            "Frame",
             category,
-            st.intern("TracyFrame"),
+            st.intern("Frame"),
             ns_to_ms(start),
             ns_to_ms(end),
             MarkerPhase::Interval,
@@ -888,7 +888,7 @@ json ThreadTables::buildMarkerSchemas()
     json displayWithTimeline = json::array({"marker-chart", "marker-table", "timeline-overview"});
     return json::array({
         {
-            {"name", "TracyZone"},
+            {"name", "Zone"},
             {"display", displayWithTimeline},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "{marker.data.name}"},
@@ -905,7 +905,7 @@ json ThreadTables::buildMarkerSchemas()
             })}
         },
         {
-            {"name", "TracyMessage"},
+            {"name", "Message"},
             {"display", display},
             {"chartLabel", "{marker.data.text}"},
             {"tooltipLabel", "{marker.data.text}"},
@@ -918,7 +918,7 @@ json ThreadTables::buildMarkerSchemas()
             })}
         },
         {
-            {"name", "TracyLock"},
+            {"name", "Lock"},
             {"display", display},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "Lock: {marker.data.name} ({marker.data.operation})"},
@@ -931,7 +931,7 @@ json ThreadTables::buildMarkerSchemas()
             })}
         },
         {
-            {"name", "TracyGpuZone"},
+            {"name", "GpuZone"},
             {"display", display},
             {"chartLabel", "{marker.data.name}"},
             {"tooltipLabel", "GPU: {marker.data.name}"},
@@ -949,7 +949,7 @@ json ThreadTables::buildMarkerSchemas()
             })}
         },
         {
-            {"name", "TracyFrame"},
+            {"name", "Frame"},
             {"display", display},
             {"chartLabel", "Frame {marker.data.frameNumber}"},
             {"tooltipLabel", "Frame {marker.data.frameNumber} ({marker.data.fps} FPS)"},
