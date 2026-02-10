@@ -514,6 +514,25 @@ public:
     uint64_t GetContextSwitchPerCpuCount() const;
     bool HasContextSwitches() const { return !m_data.ctxSwitch.empty(); }
     uint64_t GetSrcLocCount() const { return m_data.sourceLocationPayload.size() + m_data.sourceLocation.size(); }
+
+    std::vector<int16_t> GetAllSourceLocationIds() const
+    {
+        std::vector<int16_t> ids;
+        ids.reserve( m_data.sourceLocationExpand.size() + m_data.sourceLocationPayload.size() );
+        for( size_t i = 1; i < m_data.sourceLocationExpand.size(); i++ )
+        {
+            ids.push_back( (int16_t)i );
+        }
+        for( size_t i = 0; i < m_data.sourceLocationPayload.size(); i++ )
+        {
+            ids.push_back( -int16_t( i + 1 ) );
+        }
+        return ids;
+    }
+
+#ifdef TRACY_NO_STATISTICS
+    const unordered_flat_map<int16_t, uint64_t>& GetSourceLocationZonesCntMap() const { return m_data.sourceLocationZonesCnt; }
+#endif
     uint64_t GetCallstackPayloadCount() const { return m_data.callstackPayload.size() - 1; }
 #ifndef TRACY_NO_STATISTICS
     uint64_t GetCallstackParentPayloadCount() const { return m_data.parentCallstackPayload.size(); }

@@ -5,6 +5,7 @@
 #  include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <inttypes.h>
@@ -14,10 +15,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <unordered_map>
+#include <vector>
 
 #include "../../public/common/TracyProtocol.hpp"
 #include "../../public/common/TracyStackFrames.hpp"
+#include "../../server/TracyFileRead.hpp"
 #include "../../server/TracyFileWrite.hpp"
 #include "../../server/TracyMemory.hpp"
 #include "../../server/TracyPrint.hpp"
@@ -93,7 +98,276 @@ void AnsiPrintf( const char* ansiEscape, const char* format, ... ) {
 [[noreturn]] void Usage()
 {
     printf( "Usage: capture -o output.tracy [-a address] [-p port] [-f] [-s seconds] [-m memlimit]\n" );
+    printf( "       capture -A input.tracy [-n top_n]\n" );
     exit( 1 );
+}
+
+struct SizeEntry
+{
+    const char* name;
+    uint64_t count;
+    uint64_t bytes;
+};
+
+struct SrcLocEntry
+{
+    int16_t srcloc;
+    const char* zoneName;
+    const char* file;
+    uint32_t line;
+    uint64_t zoneCount;
+    uint64_t lockCount;
+};
+
+static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries )
+{
+    uint64_t totalBytes = 0;
+    for( auto& e : entries ) totalBytes += e.bytes;
+
+    printf( "\n" );
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "=== %s ===\n", title );
+    printf( "%-36s %16s %16s %8s\n", "Category", "Count", "Est. Size", "%" );
+    printf( "%-36s %16s %16s %8s\n", "------------------------------------", "----------------", "----------------", "--------" );
+
+    std::sort( entries.begin(), entries.end(), []( const SizeEntry& a, const SizeEntry& b ) { return a.bytes > b.bytes; } );
+
+    for( auto& e : entries )
+    {
+        if( e.count == 0 && e.bytes == 0 ) continue;
+        double pct = totalBytes > 0 ? 100.0 * e.bytes / totalBytes : 0.0;
+        printf( "%-36s %16s %16s %7.1f%%\n", e.name, tracy::RealToString( e.count ), tracy::MemSizeToString( e.bytes ), pct );
+    }
+
+    printf( "%-36s %16s %16s %8s\n", "------------------------------------", "----------------", "----------------", "--------" );
+    printf( "%-36s %16s ", "Total (uncompressed est.)", "" );
+    AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( totalBytes ) );
+}
+
+int AnalyzeTrace( const char* input, int topN )
+{
+    auto f = std::unique_ptr<tracy::FileRead>( tracy::FileRead::Open( input ) );
+    if( !f )
+    {
+        printf( "Cannot open trace file %s\n", input );
+        return 1;
+    }
+
+    printf( "Loading trace %s...", input );
+    fflush( stdout );
+    auto worker = tracy::Worker( *f, tracy::EventType::All, false );
+    printf( " done.\n" );
+
+    const auto firstTime = worker.GetFirstTime();
+    const auto lastTime = worker.GetLastTime();
+
+    AnsiPrintf( ANSI_BOLD ANSI_GREEN, "\n=== Trace Overview ===\n" );
+    printf( "Program:        %s\n", worker.GetCaptureProgram().c_str() );
+    printf( "Time span:      %s\n", tracy::TimeToString( lastTime - firstTime ) );
+    printf( "Zones:          %s\n", tracy::RealToString( worker.GetZoneCount() ) );
+    printf( "GPU zones:      %s\n", tracy::RealToString( worker.GetGpuZoneCount() ) );
+    printf( "Source locs:    %s\n", tracy::RealToString( worker.GetSrcLocCount() ) );
+    printf( "Threads:        %s\n", tracy::RealToString( worker.GetThreadData().size() ) );
+    printf( "Strings:        %s\n", tracy::RealToString( worker.GetStringsCount() ) );
+
+    const auto& threads = worker.GetThreadData();
+    const auto& messages = worker.GetMessages();
+    const auto& lockMap = worker.GetLockMap();
+    const auto& plots = worker.GetPlots();
+    const auto& gpuData = worker.GetGpuData();
+    const auto& frames = worker.GetFrames();
+    const auto& frameImages = worker.GetFrameImages();
+
+    uint64_t zoneCount = worker.GetZoneCount();
+    uint64_t zoneExtraCount = worker.GetZoneExtraCount();
+    uint64_t gpuZoneCount = worker.GetGpuZoneCount();
+
+    uint64_t totalSamples = 0;
+    for( auto& td : threads )
+    {
+        totalSamples += td->samples.size();
+    }
+
+    uint64_t totalCtxSwitch = 0;
+    for( auto& td : threads )
+    {
+        auto cs = worker.GetContextSwitchData( td->id );
+        if( cs ) totalCtxSwitch += cs->v.size();
+    }
+
+    uint64_t totalLockEvents = 0;
+    for( auto& lm : lockMap )
+    {
+        totalLockEvents += lm.second->timeline.size();
+    }
+
+    uint64_t totalMemEvents = 0;
+    for( auto& mn : worker.GetMemNameMap() )
+    {
+        totalMemEvents += mn.second->data.size();
+    }
+
+    uint64_t totalPlotItems = 0;
+    for( auto& p : plots )
+    {
+        totalPlotItems += p->data.size();
+    }
+
+    uint64_t totalFrameEvents = 0;
+    for( auto& fd : frames )
+    {
+        totalFrameEvents += fd->frames.size();
+    }
+
+    uint64_t totalGpuEvents = 0;
+    for( auto& g : gpuData )
+    {
+        for( auto& t : g->threadData )
+        {
+            totalGpuEvents += t.second.timeline.size();
+        }
+    }
+
+    uint64_t totalFrameImageBytes = 0;
+    for( auto& fi : frameImages )
+    {
+        totalFrameImageBytes += fi->csz;
+    }
+
+    std::vector<SizeEntry> entries;
+    entries.push_back( { "Zones (ZoneEvent)", zoneCount, zoneCount * sizeof( tracy::ZoneEvent ) } );
+    entries.push_back( { "Zone extras (ZoneExtra)", zoneExtraCount, zoneExtraCount * sizeof( tracy::ZoneExtra ) } );
+    entries.push_back( { "Zone children vectors", zoneCount, zoneCount * sizeof( tracy::short_ptr<tracy::ZoneEvent> ) } );
+    entries.push_back( { "GPU zones (GpuEvent)", gpuZoneCount, gpuZoneCount * sizeof( tracy::GpuEvent ) } );
+    entries.push_back( { "Context switches", totalCtxSwitch, totalCtxSwitch * sizeof( tracy::ContextSwitchData ) } );
+    entries.push_back( { "Lock events (LockEventPtr)", totalLockEvents, totalLockEvents * sizeof( tracy::LockEventPtr ) } );
+    entries.push_back( { "Memory events (MemEvent)", totalMemEvents, totalMemEvents * sizeof( tracy::MemEvent ) } );
+    entries.push_back( { "Messages", messages.size(), messages.size() * sizeof( tracy::MessageData ) } );
+    entries.push_back( { "Plot items", totalPlotItems, totalPlotItems * sizeof( tracy::PlotItem ) } );
+    entries.push_back( { "Callstack samples", totalSamples, totalSamples * sizeof( tracy::SampleData ) } );
+    entries.push_back( { "Callstack payloads", worker.GetCallstackPayloadCount(), worker.GetCallstackPayloadCount() * 8 * 3 } );
+    entries.push_back( { "Callstack frames", worker.GetCallstackFrameCount(), worker.GetCallstackFrameCount() * sizeof( tracy::CallstackFrameData ) } );
+    entries.push_back( { "Frame events", totalFrameEvents, totalFrameEvents * sizeof( tracy::FrameEvent ) } );
+    entries.push_back( { "Frame images (compressed)", frameImages.size(), totalFrameImageBytes } );
+    entries.push_back( { "Source locations", worker.GetSrcLocCount(), worker.GetSrcLocCount() * sizeof( tracy::SourceLocation ) } );
+    entries.push_back( { "Symbols", worker.GetSymbolsCount(), worker.GetSymbolsCount() * sizeof( tracy::SymbolData ) } );
+    entries.push_back( { "Symbol code", worker.GetSymbolCodeCount(), worker.GetSymbolCodeSize() } );
+    entries.push_back( { "Source file cache", worker.GetSourceFileCacheCount(), worker.GetSourceFileCacheSize() } );
+
+    PrintSizeTable( "Estimated Memory Usage by Category", entries );
+
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Location Analysis ===\n" );
+    printf( "Total source locations: %s (int16_t limit: 32,767)\n", tracy::RealToString( worker.GetSrcLocCount() ) );
+    double usage = 100.0 * worker.GetSrcLocCount() / 32767.0;
+    if( usage > 90.0 )
+        AnsiPrintf( ANSI_RED ANSI_BOLD, "WARNING: %.1f%% of source location limit used!\n", usage );
+    else if( usage > 70.0 )
+        AnsiPrintf( ANSI_YELLOW, "%.1f%% of source location limit used.\n", usage );
+    else
+        printf( "%.1f%% of source location limit used.\n", usage );
+
+    std::vector<SrcLocEntry> srcLocEntries;
+
+    const auto& srclocCntMap = worker.GetSourceLocationZonesCntMap();
+    auto allIds = worker.GetAllSourceLocationIds();
+
+    std::unordered_map<int16_t, uint64_t> lockEventCounts;
+    for( auto& [lockId, lm] : lockMap )
+    {
+        lockEventCounts[lm->srcloc] += lm->timeline.size();
+    }
+
+    for( auto id : allIds )
+    {
+        auto& sl = worker.GetSourceLocation( id );
+        const char* zoneName = worker.GetZoneName( sl );
+        const char* file = worker.GetString( sl.file );
+
+        uint64_t zoneCount = 0;
+        auto it = srclocCntMap.find( id );
+        if( it != srclocCntMap.end() ) zoneCount = it->second;
+
+        uint64_t lockCount = 0;
+        auto lit = lockEventCounts.find( id );
+        if( lit != lockEventCounts.end() ) lockCount = lit->second;
+
+        srcLocEntries.push_back( { id, zoneName, file, sl.line, zoneCount, lockCount } );
+    }
+
+    std::sort( srcLocEntries.begin(), srcLocEntries.end(), []( const SrcLocEntry& a, const SrcLocEntry& b )
+    {
+        return ( a.zoneCount + a.lockCount ) > ( b.zoneCount + b.lockCount );
+    } );
+
+    int shown = topN > 0 ? std::min( topN, (int)srcLocEntries.size() ) : (int)srcLocEntries.size();
+
+    printf( "\n%-6s %-40s %-30s %12s %12s\n", "ID", "Name", "File:Line", "Zones", "Locks" );
+    printf( "%-6s %-40s %-30s %12s %12s\n", "------", "----------------------------------------", "------------------------------", "------------", "------------" );
+
+    for( int i = 0; i < shown; i++ )
+    {
+        auto& e = srcLocEntries[i];
+        char fileLine[256];
+        const char* shortFile = e.file;
+        const char* slash = strrchr( e.file, '/' );
+        if( !slash ) slash = strrchr( e.file, '\\' );
+        if( slash ) shortFile = slash + 1;
+        snprintf( fileLine, sizeof( fileLine ), "%s:%" PRIu32, shortFile, e.line );
+
+        char nameBuf[41];
+        size_t nameLen = strlen( e.zoneName );
+        if( nameLen > 40 )
+        {
+            memcpy( nameBuf, e.zoneName, 37 );
+            memcpy( nameBuf + 37, "...", 4 );
+        }
+        else
+        {
+            snprintf( nameBuf, sizeof( nameBuf ), "%s", e.zoneName );
+        }
+
+        printf( "%6d %-40s %-30s %12s %12s\n", e.srcloc, nameBuf, fileLine,
+            e.zoneCount > 0 ? tracy::RealToString( e.zoneCount ) : "",
+            e.lockCount > 0 ? tracy::RealToString( e.lockCount ) : "" );
+    }
+
+    if( (int)srcLocEntries.size() > shown )
+    {
+        printf( "... and %s more source locations\n", tracy::RealToString( srcLocEntries.size() - shown ) );
+    }
+
+    std::unordered_map<std::string, uint64_t> fileCounts;
+    for( auto& e : srcLocEntries )
+    {
+        fileCounts[e.file]++;
+    }
+
+    std::vector<std::pair<std::string, uint64_t>> fileList( fileCounts.begin(), fileCounts.end() );
+    std::sort( fileList.begin(), fileList.end(), []( const auto& a, const auto& b ) { return a.second > b.second; } );
+
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Locations by File ===\n" );
+    printf( "%-80s %8s\n", "File", "Src Locs" );
+    printf( "%-80s %8s\n", "--------------------------------------------------------------------------------", "--------" );
+
+    int fileShown = std::min( (int)fileList.size(), topN > 0 ? topN : 30 );
+    for( int i = 0; i < fileShown; i++ )
+    {
+        const char* displayFile = fileList[i].first.c_str();
+        char truncBuf[81];
+        size_t len = strlen( displayFile );
+        if( len > 80 )
+        {
+            snprintf( truncBuf, sizeof( truncBuf ), "...%s", displayFile + len - 77 );
+            displayFile = truncBuf;
+        }
+        printf( "%-80s %8s\n", displayFile, tracy::RealToString( fileList[i].second ) );
+    }
+    if( (int)fileList.size() > fileShown )
+    {
+        printf( "... and %s more files\n", tracy::RealToString( fileList.size() - fileShown ) );
+    }
+
+    printf( "\n" );
+    return 0;
 }
 
 int main( int argc, char** argv )
@@ -111,12 +385,14 @@ int main( int argc, char** argv )
     bool overwrite = false;
     const char* address = "127.0.0.1";
     const char* output = nullptr;
+    const char* analyzeInput = nullptr;
     int port = 8086;
     int seconds = -1;
     int64_t memoryLimit = -1;
+    int analyzeTopN = 25;
 
     int c;
-    while( ( c = getopt( argc, argv, "a:o:p:fs:m:" ) ) != -1 )
+    while( ( c = getopt( argc, argv, "a:o:p:fs:m:A:n:" ) ) != -1 )
     {
         switch( c )
         {
@@ -138,10 +414,21 @@ int main( int argc, char** argv )
         case 'm':
             memoryLimit = std::clamp( atoll( optarg ), 1ll, 999ll ) * tracy::GetPhysicalMemorySize() / 100;
             break;
+        case 'A':
+            analyzeInput = optarg;
+            break;
+        case 'n':
+            analyzeTopN = atoi( optarg );
+            break;
         default:
             Usage();
             break;
         }
+    }
+
+    if( analyzeInput )
+    {
+        return AnalyzeTrace( analyzeInput, analyzeTopN );
     }
 
     if( !address || !output ) Usage();
