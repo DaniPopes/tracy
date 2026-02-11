@@ -123,6 +123,8 @@ public:
         return f ? new FileRead( f, fn ) : nullptr;
     }
 
+    uint64_t GetFileSize() const { return m_dataSize; }
+
     ~FileRead()
     {
         for( auto& v : m_streams )

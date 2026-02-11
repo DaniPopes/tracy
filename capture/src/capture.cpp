@@ -119,7 +119,7 @@ struct SrcLocEntry
     uint64_t lockCount;
 };
 
-static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries )
+static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries, uint64_t fileSize = 0, int64_t actualMemUsage = 0 )
 {
     uint64_t totalBytes = 0;
     for( auto& e : entries ) totalBytes += e.bytes;
@@ -141,6 +141,21 @@ static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries )
     printf( "%-36s %16s %16s %8s\n", "------------------------------------", "----------------", "----------------", "--------" );
     printf( "%-36s %16s ", "Total (uncompressed est.)", "" );
     AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( totalBytes ) );
+    if( actualMemUsage > 0 )
+    {
+        printf( "%-36s %16s ", "Actual memory usage", "" );
+        AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( actualMemUsage ) );
+    }
+    if( fileSize > 0 )
+    {
+        printf( "%-36s %16s ", "Compressed file size", "" );
+        AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( fileSize ) );
+        if( totalBytes > 0 )
+        {
+            printf( "%-36s %16s ", "Compression ratio", "" );
+            AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%15.1fx\n", (double)totalBytes / fileSize );
+        }
+    }
 }
 
 int AnalyzeTrace( const char* input, int topN )
@@ -152,10 +167,14 @@ int AnalyzeTrace( const char* input, int topN )
         return 1;
     }
 
+    const auto fileSize = f->GetFileSize();
+
     printf( "Loading trace %s...", input );
     fflush( stdout );
     auto worker = tracy::Worker( *f, tracy::EventType::All, false );
     printf( " done.\n" );
+
+    const auto actualMemUsage = tracy::memUsage.load( std::memory_order_relaxed );
 
     const auto firstTime = worker.GetFirstTime();
     const auto lastTime = worker.GetLastTime();
@@ -163,6 +182,8 @@ int AnalyzeTrace( const char* input, int topN )
     AnsiPrintf( ANSI_BOLD ANSI_GREEN, "\n=== Trace Overview ===\n" );
     printf( "Program:        %s\n", worker.GetCaptureProgram().c_str() );
     printf( "Time span:      %s\n", tracy::TimeToString( lastTime - firstTime ) );
+    printf( "File size:      %s (compressed on disk)\n", tracy::MemSizeToString( fileSize ) );
+    printf( "Memory usage:   %s (loaded)\n", tracy::MemSizeToString( actualMemUsage ) );
     printf( "Zones:          %s\n", tracy::RealToString( worker.GetZoneCount() ) );
     printf( "GPU zones:      %s\n", tracy::RealToString( worker.GetGpuZoneCount() ) );
     printf( "Source locs:    %s\n", tracy::RealToString( worker.GetSrcLocCount() ) );
@@ -252,8 +273,9 @@ int AnalyzeTrace( const char* input, int topN )
     entries.push_back( { "Symbols", worker.GetSymbolsCount(), worker.GetSymbolsCount() * sizeof( tracy::SymbolData ) } );
     entries.push_back( { "Symbol code", worker.GetSymbolCodeCount(), worker.GetSymbolCodeSize() } );
     entries.push_back( { "Source file cache", worker.GetSourceFileCacheCount(), worker.GetSourceFileCacheSize() } );
+    entries.push_back( { "Strings (pointer map est.)", worker.GetStringsCount(), worker.GetStringsCount() * ( sizeof( uint64_t ) + sizeof( char* ) + 32 ) } );
 
-    PrintSizeTable( "Estimated Memory Usage by Category", entries );
+    PrintSizeTable( "Estimated Memory Usage by Category", entries, fileSize, actualMemUsage );
 
     AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Location Analysis ===\n" );
     printf( "Total source locations: %s (int16_t limit: 32,767)\n", tracy::RealToString( worker.GetSrcLocCount() ) );
