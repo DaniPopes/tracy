@@ -254,10 +254,23 @@ int AnalyzeTrace( const char* input, int topN )
         totalFrameImageBytes += fi->csz;
     }
 
+    const auto& zoneChildrenVecs = worker.GetZoneChildrenVectors();
+    uint64_t zoneChildrenCount = zoneChildrenVecs.size();
+    uint64_t totalZoneChildEntries = 0;
+    for( size_t i = 0; i < zoneChildrenVecs.size(); i++ )
+    {
+        totalZoneChildEntries += zoneChildrenVecs[i].size();
+    }
+    // Each children vector: sizeof(Vector<short_ptr<ZoneEvent>>) header in the outer vector.
+    // Each child entry: sizeof(short_ptr<ZoneEvent>) in the heap-allocated inner array.
+    uint64_t zoneChildrenBytes =
+        zoneChildrenCount * sizeof( tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>> ) +
+        totalZoneChildEntries * sizeof( tracy::short_ptr<tracy::ZoneEvent> );
+
     std::vector<SizeEntry> entries;
     entries.push_back( { "Zones (ZoneEvent)", zoneCount, zoneCount * sizeof( tracy::ZoneEvent ) } );
     entries.push_back( { "Zone extras (ZoneExtra)", zoneExtraCount, zoneExtraCount * sizeof( tracy::ZoneExtra ) } );
-    entries.push_back( { "Zone children vectors", zoneCount, zoneCount * sizeof( tracy::short_ptr<tracy::ZoneEvent> ) } );
+    entries.push_back( { "Zone children vectors", zoneChildrenCount, zoneChildrenBytes } );
     entries.push_back( { "GPU zones (GpuEvent)", gpuZoneCount, gpuZoneCount * sizeof( tracy::GpuEvent ) } );
     entries.push_back( { "Context switches", totalCtxSwitch, totalCtxSwitch * sizeof( tracy::ContextSwitchData ) } );
     entries.push_back( { "Lock events (LockEventPtr)", totalLockEvents, totalLockEvents * sizeof( tracy::LockEventPtr ) } );
