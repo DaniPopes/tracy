@@ -124,6 +124,7 @@ public:
     }
 
     uint64_t GetFileSize() const { return m_dataSize; }
+    uint64_t GetDecompressedSize() const { return m_decompressedSize; }
 
     ~FileRead()
     {
@@ -419,6 +420,7 @@ private:
         : m_data( nullptr )
         , m_offset( 0 )
         , m_streamId( 0 )
+        , m_decompressedSize( 0 )
         , m_filename( fn )
     {
         char hdr[4];
@@ -568,6 +570,7 @@ private:
         while( hnd.outputReady.load( std::memory_order_acquire ) == false ) { YieldThread(); }
         hnd.outputReady.store( false, std::memory_order_relaxed );
         m_buf = hnd.stream.GetBuffer();
+        m_decompressedSize += hnd.stream.GetSize();
         m_offset = 0;
 
         if( m_dataOffset < m_dataSize )
@@ -591,6 +594,7 @@ private:
     uint64_t m_dataOffset;
     size_t m_offset;
     int m_streamId;
+    uint64_t m_decompressedSize;
 
     std::string m_filename;
 

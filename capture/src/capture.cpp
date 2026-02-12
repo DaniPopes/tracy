@@ -174,6 +174,7 @@ int AnalyzeTrace( const char* input, int topN )
     auto worker = tracy::Worker( *f, tracy::EventType::All, false );
     printf( " done.\n" );
 
+    const auto decompressedSize = f->GetDecompressedSize();
     const auto actualMemUsage = tracy::memUsage.load( std::memory_order_relaxed );
 
     const auto firstTime = worker.GetFirstTime();
@@ -183,6 +184,7 @@ int AnalyzeTrace( const char* input, int topN )
     printf( "Program:        %s\n", worker.GetCaptureProgram().c_str() );
     printf( "Time span:      %s\n", tracy::TimeToString( lastTime - firstTime ) );
     printf( "File size:      %s (compressed on disk)\n", tracy::MemSizeToString( fileSize ) );
+    printf( "Uncompressed:   %s (%.1fx ratio)\n", tracy::MemSizeToString( decompressedSize ), fileSize > 0 ? (double)decompressedSize / fileSize : 0.0 );
     printf( "Memory usage:   %s (loaded)\n", tracy::MemSizeToString( actualMemUsage ) );
     printf( "Zones:          %s\n", tracy::RealToString( worker.GetZoneCount() ) );
     printf( "GPU zones:      %s\n", tracy::RealToString( worker.GetGpuZoneCount() ) );
