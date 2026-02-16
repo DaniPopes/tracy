@@ -271,9 +271,9 @@ void View::DrawFindZone()
         ImGui::PushFont( g_fonts.normal, FontBig );
         ImGui::Dummy( ImVec2( 0, ( ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeight() * 2 - ty ) * 0.5f ) );
         TextCentered( ICON_FA_CROW );
-        TextCentered( "Please wait, computing data..." );
+        TextCentered( "Please wait, computing data…" );
         ImGui::PopFont();
-        DrawWaitingDots( s_time );
+        DrawWaitingDotsCentered( s_time );
         ImGui::End();
         return;
     }
@@ -1410,7 +1410,7 @@ void View::DrawFindZone()
                             const auto c = uint32_t( ( sin( s_time * 10 ) * 0.25 + 0.75 ) * 255 );
                             const auto color = 0xFF000000 | ( c << 16 ) | ( c << 8 ) | c;
                             DrawLine( draw, ImVec2( dpos.x + zonePos, dpos.y ), ImVec2( dpos.x + zonePos, dpos.y+Height-2 ), color );
-                            m_wasActive = true;
+                            m_wasActive.store( true, std::memory_order_release );
                         }
                     }
                 }
@@ -1997,7 +1997,7 @@ void View::DrawFindZone()
                 ImGui::SameLine();
                 ImGui::Spacing();
                 ImGui::SameLine();
-                if( ImGui::Checkbox( ICON_FA_HAT_WIZARD " Include kernel", &m_statShowKernel ))
+                if( ImGui::Checkbox( ICON_FA_HAT_WIZARD " Kernel", &m_statShowKernel ))
                 {
                     m_findZone.samples.scheduleUpdate = true;
                 }

@@ -119,7 +119,7 @@ constexpr ImGuiKey s_keyTable[] = {
     /*  81 */ ImGuiKey_Keypad3,
     /*  82 */ ImGuiKey_Keypad0,
     /*  83 */ ImGuiKey_KeypadDecimal,
-    /*  84 */ ImGuiKey_RightAlt,
+    /*  84 */ ImGuiKey_None,
     /*  85 */ ImGuiKey_None,
     /*  86 */ ImGuiKey_Backslash,
     /*  87 */ ImGuiKey_F11,
@@ -135,7 +135,7 @@ constexpr ImGuiKey s_keyTable[] = {
     /*  97 */ ImGuiKey_RightCtrl,
     /*  98 */ ImGuiKey_KeypadDivide,
     /*  99 */ ImGuiKey_PrintScreen,
-    /* 100 */ ImGuiKey_RightAlt,
+    /* 100 */ ImGuiKey_None,
     /* 101 */ ImGuiKey_None,
     /* 102 */ ImGuiKey_Home,
     /* 103 */ ImGuiKey_UpArrow,
@@ -338,8 +338,8 @@ static void PointerFrame( void*, struct wl_pointer* pointer )
     if( s_wheel )
     {
         s_wheel = false;
-        s_wheelAxisX /= 8;
-        s_wheelAxisY /= 8;
+        s_wheelAxisX /= 15;
+        s_wheelAxisY /= 15;
         ImGuiIO& io = ImGui::GetIO();
         io.AddMouseWheelEvent( wl_fixed_to_double( s_wheelAxisX ), wl_fixed_to_double( s_wheelAxisY ) );
         s_wheelAxisX = s_wheelAxisY = 0;

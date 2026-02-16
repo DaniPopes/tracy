@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <algorithm>
+#include <string>
 
 #include "TracyPrint.hpp"
 #include "TracyImGui.hpp"
@@ -127,25 +128,46 @@ void PrintSource( const std::vector<Tokenizer::Line>& lines )
     }
 }
 
-bool PrintTextWrapped( const char* text, const char* end )
+bool PrintTextWrapped( const char* text, const char* end, bool strikethrough, bool underline )
 {
     bool hovered = false;
-
     if( !end ) end = text + strlen( text );
+
     auto firstWord = text;
     while( firstWord < end && *firstWord != ' ' && *firstWord != '\n' ) firstWord++;
 
-    auto fontSize = ImGui::GetFontSize();
+    const auto fontSize = ImGui::GetFontSize();
+    const auto fontSize05 = round( fontSize * 0.5f );
+    const auto scale = GetScale();
+    const auto color = ImGui::ColorConvertFloat4ToU32( ImGui::GetStyle().Colors[ImGuiCol_Text] );
+
     auto left = ImGui::GetContentRegionAvail().x;
     auto fwLen = ImGui::CalcTextSize( text, firstWord ).x;
     if( fwLen > left )
     {
+        const auto prev = left;
         ImGui::NewLine();
         left = ImGui::GetContentRegionAvail().x;
+        if( left == prev ) ImGui::SameLine( 0, 0 );
     }
 
     auto endLine = ImGui::GetFont()->CalcWordWrapPosition( fontSize, text, end, left );
-    ImGui::TextUnformatted( text, endLine );
+    if( strikethrough || underline )
+    {
+        auto y1 = ImGui::GetCursorScreenPos().y + fontSize05;
+        auto y2 = ImGui::GetCursorScreenPos().y + fontSize;
+        auto x0 = ImGui::GetCursorScreenPos().x - scale;
+        ImGui::TextUnformatted( text, endLine );
+        ImGui::SameLine( 0, 0 );
+        auto x1 = ImGui::GetCursorScreenPos().x + scale;
+        ImGui::NewLine();
+        if( strikethrough ) ImGui::GetWindowDrawList()->AddLine( ImVec2( x0, y1 ), ImVec2( x1, y1 ), color, scale );
+        if( underline ) ImGui::GetWindowDrawList()->AddLine( ImVec2( x0, y2 ), ImVec2( x1, y2 ), color, scale );
+    }
+    else
+    {
+        ImGui::TextUnformatted( text, endLine );
+    }
     if( !hovered ) hovered = ImGui::IsItemHovered();
 
     left = ImGui::GetContentRegionAvail().x;
@@ -155,7 +177,22 @@ bool PrintTextWrapped( const char* text, const char* end )
         if( *text == ' ' ) text++;
         endLine = ImGui::GetFont()->CalcWordWrapPosition( fontSize, text, end, left );
         if( text == endLine ) endLine++;
-        ImGui::TextUnformatted( text, endLine );
+        if( strikethrough || underline )
+        {
+            auto y1 = ImGui::GetCursorScreenPos().y + fontSize05;
+            auto y2 = ImGui::GetCursorScreenPos().y + fontSize;
+            auto x0 = ImGui::GetCursorScreenPos().x - scale;
+            ImGui::TextUnformatted( text, endLine );
+            ImGui::SameLine( 0, 0 );
+            auto x1 = ImGui::GetCursorScreenPos().x + scale;
+            ImGui::NewLine();
+            if( strikethrough ) ImGui::GetWindowDrawList()->AddLine( ImVec2( x0, y1 ), ImVec2( x1, y1 ), color, scale );
+            if( underline ) ImGui::GetWindowDrawList()->AddLine( ImVec2( x0, y2 ), ImVec2( x1, y2 ), color, scale );
+        }
+        else
+        {
+            ImGui::TextUnformatted( text, endLine );
+        }
         if( !hovered ) hovered = ImGui::IsItemHovered();
     }
 

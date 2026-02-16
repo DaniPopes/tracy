@@ -4,17 +4,10 @@
 #include "TracyPrint.hpp"
 #include "TracyUtility.hpp"
 #include "TracyView.hpp"
+#include "../common/TracyStackFrames.hpp"
 
 namespace tracy
 {
-
-bool View::IsFrameExternal( const char* filename, const char* image )
-{
-    if( strncmp( filename, "/usr/", 5 ) == 0 || strncmp( filename, "/lib/", 5 ) == 0 || strcmp( filename, "[unknown]" ) == 0 || strcmp( filename, "<kernel>" ) == 0 ) return true;
-    if( strncmp( filename, "C:\\Program Files\\", 17 ) == 0 || strncmp( filename, "d:\\a01\\_work\\", 13 ) == 0 ) return true;
-    if( !image ) return false;
-    return strncmp( image, "/usr/", 5 ) == 0 || strncmp( image, "/lib/", 5 ) == 0 || strncmp( image, "/lib64/", 7 ) == 0 || strcmp( image, "<kernel>" ) == 0;
-}
 
 uint32_t View::GetThreadColor( uint64_t thread, int depth )
 {
@@ -839,7 +832,7 @@ const char* View::GetFrameSetName( const FrameData& fd ) const
 
 const char* View::GetFrameSetName( const FrameData& fd, const Worker& worker )
 {
-    enum { Pool = 4 };
+    constexpr size_t Pool = 4;
     static char bufpool[Pool][64];
     static int bufsel = 0;
 
@@ -931,6 +924,76 @@ void View::UpdateTitle()
     {
         m_stcb( captureName );
     }
+}
+
+nlohmann::json View::GetCallstackJson( const VarArray<CallstackFrameId>& cs )
+{
+    nlohmann::json json = {
+        { "type", "callstack" },
+        { "frames", nlohmann::json::array() }
+    };
+    auto& frames = json["frames"];
+
+    int fidx = 0;
+    for( auto& entry : cs )
+    {
+        auto frameData = m_worker.GetCallstackFrame( entry );
+        if( !frameData )
+        {
+            frames.push_back( { "pointer", m_worker.GetCanonicalPointer( entry ) } );
+        }
+        else
+        {
+            const auto fsz = frameData->size;
+            for( uint8_t f=0; f<fsz; f++ )
+            {
+                const auto& frame = frameData->data[f];
+                auto txt = m_worker.GetString( frame.name );
+
+                if( fidx == 0 && f != fsz-1 )
+                {
+                    auto test = tracy::s_tracyStackFrames;
+                    bool match = false;
+                    do
+                    {
+                        if( strcmp( txt, *test ) == 0 )
+                        {
+                            match = true;
+                            break;
+                        }
+                    }
+                    while( *++test );
+                    if( match ) continue;
+                }
+
+                frames.push_back( {
+                    { "function", txt },
+                    { "source", m_worker.GetString( frame.file ) },
+                } );
+                auto& frameJson = frames.back();
+
+                if( f == fsz-1 )
+                {
+                    frameJson["frame"] = fidx++;
+                    frameJson["inline"] = false;
+                }
+                else
+                {
+                    frameJson["frame"] = fidx;
+                    frameJson["inline"] = f;
+                }
+                if( frame.line != 0 )
+                {
+                    frameJson["line"] = frame.line;
+                }
+                if( frameData->imageName.Active() )
+                {
+                    frameJson["executable"] = m_worker.GetString( frameData->imageName );
+                }
+            }
+        }
+    }
+    return json;
 }
 
 }

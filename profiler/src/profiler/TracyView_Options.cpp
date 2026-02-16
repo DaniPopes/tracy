@@ -183,7 +183,7 @@ void View::DrawOptions()
                                 }
                             }
 
-                            enum { NumSlopes = 10000 };
+                            constexpr size_t NumSlopes = 10000;
                             std::random_device rd;
                             std::default_random_engine gen( rd() );
                             std::uniform_int_distribution<size_t> dist( 0, lastidx - 1 );
@@ -702,7 +702,9 @@ void View::DrawOptions()
         {
             pdqsort_branchless( m_threadOrder.begin(), m_threadOrder.end(), [this] ( const auto& lhs, const auto& rhs ) {
                 if( lhs->groupHint != rhs->groupHint ) return lhs->groupHint < rhs->groupHint;
-                return strcmp( m_worker.GetThreadName( lhs->id ), m_worker.GetThreadName( rhs->id ) ) < 0;
+                const auto cmp = strcmp( m_worker.GetThreadName( lhs->id ), m_worker.GetThreadName( rhs->id ) );
+                if( cmp != 0 ) return cmp < 0;
+                return lhs->id < rhs->id;
             } );
         }
 

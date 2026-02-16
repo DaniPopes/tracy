@@ -58,6 +58,7 @@
 
 #include "Backend.hpp"
 #include "ConnectionHistory.hpp"
+#include "EmscriptenShim.hpp"
 #include "Filters.hpp"
 #include "Fonts.hpp"
 #include "HttpRequest.hpp"
@@ -83,7 +84,7 @@ struct ClientData
 enum class ViewShutdown { False, True, Join };
 
 static tracy::unordered_flat_map<uint64_t, ClientData> clients;
-static std::unique_ptr<tracy::View> view;
+static std::atomic<std::shared_ptr<tracy::View>> view;
 static tracy::BadVersionState badVer;
 static uint16_t port = 8086;
 static const char* connectTo = nullptr;
@@ -160,15 +161,15 @@ static void SetupDPIScale()
 {
     auto scale = dpiScale * tracy::s_config.userScale;
 
+#ifdef __APPLE__
+    scale = tracy::s_config.userScale;
+#endif
+
     if( !dpiFirstSetup && prevScale == scale ) return;
     dpiFirstSetup = false;
     dpiChanged = 2;
 
     LoadFonts( scale );
-
-#ifdef __APPLE__
-    scale = 1.0f;
-#endif
 
     auto& style = ImGui::GetStyle();
     style = ImGuiStyle();
@@ -199,7 +200,8 @@ static void SetupDPIScale()
 static int IsBusy()
 {
     if( loadThread.joinable() ) return 2;
-    if( view && !view->IsBackgroundDone() ) return 1;
+    auto ptr = view.load( std::memory_order_acquire );
+    if( ptr && !ptr->IsBackgroundDone() ) return 1;
     return 0;
 }
 
@@ -348,12 +350,12 @@ int main( int argc, char** argv )
 
     if( initFileOpen )
     {
-        view = std::make_unique<tracy::View>( RunOnMainThread, *initFileOpen, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+        view.store( std::make_shared<tracy::View>( RunOnMainThread, *initFileOpen, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
         initFileOpen.reset();
     }
     else if( connectTo )
     {
-        view = std::make_unique<tracy::View>( RunOnMainThread, connectTo, port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+        view.store( std::make_shared<tracy::View>( RunOnMainThread, connectTo, port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
     }
 
     tracy::Fileselector::Init();
@@ -365,7 +367,7 @@ int main( int argc, char** argv )
     if( loadThread.joinable() ) loadThread.join();
     if( updateThread.joinable() ) updateThread.join();
     if( updateNotesThread.joinable() ) updateNotesThread.join();
-    view.reset();
+    view.store( nullptr, std::memory_order_release );
 
     tracy::FreeTexture( zigzagTex, RunOnMainThread );
     tracy::FreeTexture( iconTex, RunOnMainThread );
@@ -378,7 +380,8 @@ int main( int argc, char** argv )
 
 static void UpdateBroadcastClients()
 {
-    if( !view )
+    auto ptr = view.load( std::memory_order_acquire );
+    if( !ptr )
     {
         const auto time = std::chrono::duration_cast<std::chrono::milliseconds>( std::chrono::system_clock::now().time_since_epoch() ).count();
         if( !broadcastListen )
@@ -587,7 +590,8 @@ static void DrawContents()
     const bool achievementsAttention = tracy::s_config.achievements ? s_achievements->NeedsAttention() : false;
 
     static int activeFrames = 3;
-    if( tracy::WasActive() || !clients.empty() || ( view && view->WasActive() ) || achievementsAttention )
+    auto viewPtr = view.load( std::memory_order_acquire );
+    if( tracy::WasActive() || !clients.empty() || ( viewPtr && viewPtr->WasActive() ) || achievementsAttention )
     {
         activeFrames = 3;
     }
@@ -626,7 +630,7 @@ static void DrawContents()
 
     setlocale( LC_NUMERIC, "C" );
 
-    if( !view )
+    if( !viewPtr )
     {
         if( s_customTitle )
         {
@@ -863,7 +867,7 @@ static void DrawContents()
             ImGui::EndPopup();
         }
         ImGui::SameLine();
-        if( ImGui::Button( ICON_FA_COMMENT " Chat" ) )
+        if( ImGui::Button( ICON_FA_COMMENTS " Chat" ) )
         {
             tracy::OpenWebpage( "https://discord.gg/pk78auc" );
         }
@@ -962,11 +966,11 @@ static void DrawContents()
                 {
                     std::string addrPart = std::string( adata, ptr );
                     uint16_t portPart = (uint16_t)atoi( ptr+1 );
-                    view = std::make_unique<tracy::View>( RunOnMainThread, addrPart.c_str(), portPart, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+                    view.store( std::make_shared<tracy::View>( RunOnMainThread, addrPart.c_str(), portPart, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
                 }
                 else
                 {
-                    view = std::make_unique<tracy::View>( RunOnMainThread, address.c_str(), port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+                    view.store( std::make_shared<tracy::View>( RunOnMainThread, address.c_str(), port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
                 }
             }
         }
@@ -990,7 +994,7 @@ static void DrawContents()
                         loadThread = std::thread( [f] {
                             try
                             {
-                                view = std::make_unique<tracy::View>( RunOnMainThread, *f, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+                                view.store( std::make_shared<tracy::View>( RunOnMainThread, *f, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
                             }
                             catch( const tracy::UnsupportedVersion& e )
                             {
@@ -1123,7 +1127,7 @@ static void DrawContents()
                 }
                 if( selected && !loadThread.joinable() )
                 {
-                    view = std::make_unique<tracy::View>( RunOnMainThread, v.second.address.c_str(), v.second.port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+                    view.store( std::make_shared<tracy::View>( RunOnMainThread, v.second.address.c_str(), v.second.port, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
                 }
                 ImGui::NextColumn();
                 const auto acttime = ( v.second.activeTime + ( time - v.second.time ) / 1000 ) * 1000000000ll;
@@ -1169,8 +1173,8 @@ static void DrawContents()
             {
                 static float rnTime = 0;
                 rnTime += ImGui::GetIO().DeltaTime;
-                tracy::TextCentered( "Fetching release notes..." );
-                tracy::DrawWaitingDots( rnTime );
+                tracy::TextCentered( "Fetching release notes…" );
+                tracy::DrawWaitingDotsCentered( rnTime );
             }
             else
             {
@@ -1191,17 +1195,19 @@ static void DrawContents()
             clients.clear();
         }
         if( loadThread.joinable() ) loadThread.join();
-        view->NotifyRootWindowSize( display_w, display_h );
-        if( !view->Draw() )
+        viewPtr->NotifyRootWindowSize( display_w, display_h );
+        if( !viewPtr->Draw() )
         {
             viewShutdown.store( ViewShutdown::True, std::memory_order_relaxed );
-            reconnect = view->ReconnectRequested();
+            reconnect = viewPtr->ReconnectRequested();
             if( reconnect )
             {
-                reconnectAddr = view->GetAddress();
-                reconnectPort = view->GetPort();
+                reconnectAddr = viewPtr->GetAddress();
+                reconnectPort = viewPtr->GetPort();
             }
-            loadThread = std::thread( [view = std::move( view )] () mutable {
+
+            view.store( nullptr, std::memory_order_release );
+            loadThread = std::thread( [view = std::move( viewPtr )] () mutable {
                 view.reset();
                 viewShutdown.store( ViewShutdown::Join, std::memory_order_relaxed );
             } );
@@ -1211,9 +1217,9 @@ static void DrawContents()
     auto totalProgress = progress.total.load( std::memory_order_relaxed );
     if( totalProgress != 0 )
     {
-        ImGui::OpenPopup( "Loading trace..." );
+        ImGui::OpenPopup( "Loading trace…" );
     }
-    if( ImGui::BeginPopupModal( "Loading trace...", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings) )
+    if( ImGui::BeginPopupModal( "Loading trace…", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings) )
     {
         ImGui::PushFont( g_fonts.normal, FontNormal * 2.f );
         ImGui::Spacing();
@@ -1222,7 +1228,7 @@ static void DrawContents()
         ImGui::PopFont();
 
         animTime += ImGui::GetIO().DeltaTime;
-        tracy::DrawWaitingDots( animTime );
+        tracy::DrawWaitingDotsCentered( animTime );
 
         auto currProgress = progress.progress.load( std::memory_order_relaxed );
         if( totalProgress == 0 )
@@ -1233,37 +1239,37 @@ static void DrawContents()
         switch( currProgress )
         {
         case tracy::LoadProgress::Initialization:
-            ImGui::TextUnformatted( "Initialization..." );
+            ImGui::TextUnformatted( "Initialization…" );
             break;
         case tracy::LoadProgress::Locks:
-            ImGui::TextUnformatted( "Locks..." );
+            ImGui::TextUnformatted( "Locks…" );
             break;
         case tracy::LoadProgress::Messages:
-            ImGui::TextUnformatted( "Messages..." );
+            ImGui::TextUnformatted( "Messages…" );
             break;
         case tracy::LoadProgress::Zones:
-            ImGui::TextUnformatted( "CPU zones..." );
+            ImGui::TextUnformatted( "CPU zones…" );
             break;
         case tracy::LoadProgress::GpuZones:
-            ImGui::TextUnformatted( "GPU zones..." );
+            ImGui::TextUnformatted( "GPU zones…" );
             break;
         case tracy::LoadProgress::Plots:
-            ImGui::TextUnformatted( "Plots..." );
+            ImGui::TextUnformatted( "Plots…" );
             break;
         case tracy::LoadProgress::Memory:
-            ImGui::TextUnformatted( "Memory..." );
+            ImGui::TextUnformatted( "Memory…" );
             break;
         case tracy::LoadProgress::CallStacks:
-            ImGui::TextUnformatted( "Call stacks..." );
+            ImGui::TextUnformatted( "Call stacks…" );
             break;
         case tracy::LoadProgress::FrameImages:
-            ImGui::TextUnformatted( "Frame images..." );
+            ImGui::TextUnformatted( "Frame images…" );
             break;
         case tracy::LoadProgress::ContextSwitches:
-            ImGui::TextUnformatted( "Context switches..." );
+            ImGui::TextUnformatted( "Context switches…" );
             break;
         case tracy::LoadProgress::ContextSwitchesPerCpu:
-            ImGui::TextUnformatted( "CPU context switches..." );
+            ImGui::TextUnformatted( "CPU context switches…" );
             break;
         default:
             assert( false );
@@ -1271,7 +1277,7 @@ static void DrawContents()
         }
         ImGui::ProgressBar( float( currProgress ) / totalProgress, ImVec2( 200 * dpiScale, 0 ) );
 
-        ImGui::TextUnformatted( "Progress..." );
+        ImGui::TextUnformatted( "Progress…" );
         auto subTotal = progress.subTotal.load( std::memory_order_relaxed );
         auto subProgress = progress.subProgress.load( std::memory_order_relaxed );
         if( subTotal == 0 )
@@ -1287,20 +1293,20 @@ static void DrawContents()
     switch( viewShutdown.load( std::memory_order_relaxed ) )
     {
     case ViewShutdown::True:
-        ImGui::OpenPopup( "Capture cleanup..." );
+        ImGui::OpenPopup( "Capture cleanup…" );
         break;
     case ViewShutdown::Join:
         loadThread.join();
         viewShutdown.store( ViewShutdown::False, std::memory_order_relaxed );
         if( reconnect )
         {
-            view = std::make_unique<tracy::View>( RunOnMainThread, reconnectAddr.c_str(), reconnectPort, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements );
+            view.store( std::make_unique<tracy::View>( RunOnMainThread, reconnectAddr.c_str(), reconnectPort, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_achievements ), std::memory_order_release );
         }
         break;
     default:
         break;
     }
-    if( ImGui::BeginPopupModal( "Capture cleanup...", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
+    if( ImGui::BeginPopupModal( "Capture cleanup…", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
     {
         if( viewShutdown.load( std::memory_order_relaxed ) != ViewShutdown::True ) ImGui::CloseCurrentPopup();
         ImGui::PushFont( g_fonts.normal, FontNormal * 2.f );
@@ -1309,7 +1315,7 @@ static void DrawContents()
         ImGui::Spacing();
         ImGui::PopFont();
         animTime += ImGui::GetIO().DeltaTime;
-        tracy::DrawWaitingDots( animTime );
+        tracy::DrawWaitingDotsCentered( animTime );
         ImGui::TextUnformatted( "Please wait, cleanup is in progress" );
         ImGui::EndPopup();
     }
@@ -1345,7 +1351,7 @@ The *Achievements* system will guide you through the main features and teach you
 Would you like to enable achievements?
 )";
 
-        tracy::Markdown md;
+        tracy::Markdown md( nullptr, nullptr );
         md.Print( text, strlen( text ) );
         ImGui::Spacing();
         ImGui::PushFont( g_fonts.normal, FontSmall );

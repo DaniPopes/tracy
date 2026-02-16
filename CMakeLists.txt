@@ -78,7 +78,7 @@ endif()
 
 # Public dependency on some libraries required when using Mingw
 if(WIN32 AND ${CMAKE_CXX_COMPILER_ID} MATCHES "GNU|Clang")
-    target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp)
+    target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp secur32)
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
@@ -137,6 +137,7 @@ set_option(TRACY_MANUAL_LIFETIME "Enable the manual lifetime management of the p
 set_option(TRACY_FIBERS "Enable fibers support" OFF)
 set_option(TRACY_NO_CRASH_HANDLER "Disable crash handling" OFF)
 set_option(TRACY_TIMER_FALLBACK "Use lower resolution timers" OFF)
+set_option(TRACY_DISALLOW_HW_TIMER  "Disallow hardware timer (may be useful on VMs). Requires TRACY_TIMER_FALLBACK=ON" OFF)
 set_option(TRACY_LIBUNWIND_BACKTRACE "Use libunwind backtracing where supported" OFF)
 set_option(TRACY_SYMBOL_OFFLINE_RESOLVE "Instead of full runtime symbol resolution, only resolve the image path and offset to enable offline symbol resolution" OFF)
 set_option(TRACY_LIBBACKTRACE_ELF_DYNLOAD_SUPPORT "Enable libbacktrace to support dynamically loaded elfs in symbol resolution resolution after the first symbol resolve operation" OFF)
@@ -146,6 +147,8 @@ set_option(TRACY_IGNORE_MEMORY_FAULTS "Ignore instrumentation errors from memory
 # advanced
 set_option(TRACY_VERBOSE "[advanced] Verbose output from the profiler" OFF)
 mark_as_advanced(TRACY_VERBOSE)
+set_option(TRACY_NO_INTERNAL_MESSAGE "[advanced] Prevent the profiler from logging messages" OFF)
+mark_as_advanced(TRACY_NO_INTERNAL_MESSAGE)
 set_option(TRACY_DEMANGLE "[advanced] Don't use default demangling function - You'll need to provide your own" OFF)
 mark_as_advanced(TRACY_DEMANGLE)
 if(rocprofiler-sdk_FOUND)
@@ -156,6 +159,9 @@ endif()
 # handle incompatible combinations
 if(TRACY_MANUAL_LIFETIME AND NOT TRACY_DELAYED_INIT)
     message(FATAL_ERROR "TRACY_MANUAL_LIFETIME can not be activated with disabled TRACY_DELAYED_INIT")
+endif()
+if(TRACY_DISALLOW_HW_TIMER AND NOT TRACY_TIMER_FALLBACK)
+    message(FATAL_ERROR "TRACY_DISALLOW_HW_TIMER can not be activated with disabled TRACY_TIMER_FALLBACK")
 endif()
 
 if(NOT TRACY_STATIC)

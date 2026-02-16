@@ -59,11 +59,12 @@ View::View( void(*cbMainThread)(const std::function<void()>&, bool), const char*
     , m_horizontalScrollMultiplier( s_config.horizontalScrollMultiplier )
     , m_verticalScrollMultiplier( s_config.verticalScrollMultiplier )
     , m_manualData( std::make_shared<TracyManualData>() )
+    , m_markdown( nullptr, nullptr )
 #ifdef __EMSCRIPTEN__
     , m_td( 2, "ViewMt" )
 #else
     , m_td( std::thread::hardware_concurrency(), "ViewMt" )
-    , m_llm( m_worker, *m_manualData )
+    , m_llm( m_worker, *this, *m_manualData )
 #endif
 {
     InitTextEditor();
@@ -89,11 +90,12 @@ View::View( void(*cbMainThread)(const std::function<void()>&, bool), FileRead& f
     , m_horizontalScrollMultiplier( s_config.horizontalScrollMultiplier )
     , m_verticalScrollMultiplier( s_config.verticalScrollMultiplier )
     , m_manualData( std::make_shared<TracyManualData>() )
+    , m_markdown( nullptr, nullptr )
 #ifdef __EMSCRIPTEN__
     , m_td( 2, "ViewMt" )
 #else
     , m_td( std::thread::hardware_concurrency(), "ViewMt" )
-    , m_llm( m_worker, *m_manualData )
+    , m_llm( m_worker, *this, *m_manualData )
 #endif
 {
     m_notificationTime = 4;
@@ -126,7 +128,9 @@ View::~View()
     if( m_compare.loadThread.joinable() ) m_compare.loadThread.join();
     if( m_saveThread.joinable() ) m_saveThread.join();
 
-    if( m_frameTexture ) FreeTexture( m_frameTexture, m_cbMainThread );
+    if( m_FrameTextureCache.textureId ) FreeTexture( m_FrameTextureCache.textureId, m_cbMainThread );
+    if( m_FrameTextureCacheConnection.textureId ) FreeTexture( m_FrameTextureCacheConnection.textureId, m_cbMainThread );
+
     if( m_playback.texture ) FreeTexture( m_playback.texture, m_cbMainThread );
 }
 
@@ -684,7 +688,7 @@ static const char* MainWindowButtons[] = {
     ICON_FA_SQUARE " Stopped"
 };
 
-enum { MainWindowButtonsCount = sizeof( MainWindowButtons ) / sizeof( *MainWindowButtons ) };
+constexpr size_t MainWindowButtonsCount = sizeof( MainWindowButtons ) / sizeof( *MainWindowButtons );
 
 bool View::DrawImpl()
 {
@@ -699,8 +703,8 @@ bool View::DrawImpl()
         TextCentered( ICON_FA_WIFI );
         ImGui::Spacing();
         ImGui::PopFont();
-        ImGui::TextUnformatted( "Waiting for connection..." );
-        DrawWaitingDots( s_time );
+        ImGui::TextUnformatted( "Waiting for connection…" );
+        DrawWaitingDotsCentered( s_time );
         ImGui::End();
         return keepOpen;
     }
@@ -754,7 +758,7 @@ bool View::DrawImpl()
     }
 
     const auto& io = ImGui::GetIO();
-    m_wasActive = false;
+    m_wasActive.store( false, std::memory_order_release );
 
     assert( m_shortcut == ShortcutAction::None );
     if( io.KeyCtrl )
@@ -908,7 +912,7 @@ bool View::DrawImpl()
     ImGui::SameLine();
     ToggleButton( ICON_FA_GEAR, m_showOptions );
     ImGui::SameLine();
-    ToggleButton( ICON_FA_TAGS " Messages", m_showMessages );
+    ToggleButton( ICON_FA_COMMENT " Messages", m_showMessages );
     ImGui::SameLine();
     ToggleButton( ICON_FA_MAGNIFYING_GLASS " Find", m_findZone.show );
     ImGui::SameLine();
@@ -1250,14 +1254,18 @@ bool View::DrawImpl()
         }
     }
 
-    m_wasActive |= m_callstackBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_sampleParentBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_callstackTreeBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_zoneinfoBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_findZoneBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_optionsLockBuzzAnim.Update( io.DeltaTime );
-    m_wasActive |= m_lockInfoAnim.Update( io.DeltaTime );
-    m_wasActive |= m_statBuzzAnim.Update( io.DeltaTime );
+    bool active = m_wasActive.load( std::memory_order_acquire );
+
+    active |= m_callstackBuzzAnim.Update( io.DeltaTime );
+    active |= m_sampleParentBuzzAnim.Update( io.DeltaTime );
+    active |= m_callstackTreeBuzzAnim.Update( io.DeltaTime );
+    active |= m_zoneinfoBuzzAnim.Update( io.DeltaTime );
+    active |= m_findZoneBuzzAnim.Update( io.DeltaTime );
+    active |= m_optionsLockBuzzAnim.Update( io.DeltaTime );
+    active |= m_lockInfoAnim.Update( io.DeltaTime );
+    active |= m_statBuzzAnim.Update( io.DeltaTime );
+
+    m_wasActive.store( active, std::memory_order_release );
 
     if( m_firstFrame )
     {
@@ -1357,6 +1365,24 @@ bool View::DrawImpl()
     }
 
     return keepOpen;
+}
+
+void View::DrawFrameImage( FrameImageCache& cache, const FrameImage& fi, float scale )
+{
+    if ( fi.ptr != cache.dataPtr )
+    {
+        if( !cache.textureId ) cache.textureId = MakeTexture();
+        UpdateTexture( cache.textureId, m_worker.UnpackFrameImage( fi ), fi.w, fi.h );
+        cache.dataPtr = fi.ptr;
+    }
+    if( fi.flip )
+    {
+        ImGui::Image( cache.textureId, ImVec2( fi.w * scale, fi.h * scale ), ImVec2( 0, 1 ), ImVec2( 1, 0 ) );
+    }
+    else
+    {
+        ImGui::Image( cache.textureId, ImVec2( fi.w * scale, fi.h * scale ) );
+    }
 }
 
 void View::DrawTextEditor()
@@ -1472,7 +1498,7 @@ void View::SelectThread( uint64_t thread )
 
 bool View::WasActive() const
 {
-    return m_wasActive ||
+    return m_wasActive.load( std::memory_order_acquire ) ||
         m_zoomAnim.active ||
         m_notificationTime > 0 ||
         !m_playback.pause ||
@@ -1483,7 +1509,7 @@ bool View::WasActive() const
 void View::AddLlmAttachment( const nlohmann::json& json )
 {
 #ifndef __EMSCRIPTEN__
-    m_llm.AddAttachment( json.dump( 2 ), "user" );
+    m_llm.AddAttachmentLocking( json.dump(), "user" );
     m_llm.m_show = true;
 #endif
 }
@@ -1492,9 +1518,9 @@ void View::AddLlmQuery( const char* query )
 {
 #ifndef __EMSCRIPTEN__
     std::string str( query );
-    m_llm.AddMessage( std::move( str ), "user" );
+    m_llm.AddMessageLocking( std::move( str ), "user" );
     m_llm.m_show = true;
-    m_llm.QueueSendMessage();
+    m_llm.QueueSendMessageLocking();
 #endif
 }
 

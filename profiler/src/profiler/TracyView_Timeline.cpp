@@ -145,6 +145,9 @@ void View::HandleTimelineMouse( int64_t timespan, const ImVec2& wpos, float w )
         else if( io.KeyShift ) mod = 0.5;
 
         mod *= m_verticalScrollMultiplier;
+#ifndef __EMSCRIPTEN__
+        mod *= fabs( wheel );
+#endif
 
         if( wheel > 0 )
         {
@@ -156,6 +159,7 @@ void View::HandleTimelineMouse( int64_t timespan, const ImVec2& wpos, float w )
             t0 -= std::max( int64_t( 1 ), int64_t( p1 * mod ) );
             t1 += std::max( int64_t( 1 ), int64_t( p2 * mod ) );
         }
+        t1 = std::max(t0, t1);
         ZoomToRange( t0, t1, !m_worker.IsConnected() || m_viewMode == ViewMode::Paused );
     }
 }

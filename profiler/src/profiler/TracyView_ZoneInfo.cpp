@@ -798,8 +798,8 @@ void View::DrawZoneInfoWindow()
         {
             if( !mem.plot )
             {
-                ImGui::Text( "Please wait, computing data..." );
-                DrawWaitingDots( s_time );
+                ImGui::Text( "Please wait, computing data…" );
+                DrawWaitingDotsCentered( s_time );
             }
             else
             {

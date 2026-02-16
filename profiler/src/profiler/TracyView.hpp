@@ -106,6 +106,12 @@ class View
         int64_t total;
         uint16_t threadNum;
     };
+    
+    struct FrameImageCache
+    {
+        ImTextureID textureId = 0;
+        const void* dataPtr = nullptr;
+    };
 
 public:
     struct PlotView
@@ -168,6 +174,7 @@ public:
     bool DrawGpu( const TimelineContext& ctx, const GpuCtxData& gpu, int& offset );
     bool DrawCpuData( const TimelineContext& ctx, const std::vector<CpuUsageDraw>& cpuDraw, const std::vector<std::vector<CpuCtxDraw>>& ctxDraw, int& offset, bool hasCpuData );
     void DrawThreadMigrations( const TimelineContext& ctx, const int origOffset, uint64_t thread );
+    void DrawSourceTooltip( const char* filename, uint32_t line, int before = 3, int after = 3, bool separateTooltip = true );
 
     bool IsBackgroundDone() const { return m_worker.IsBackgroundDone(); }
 
@@ -186,7 +193,7 @@ private:
         OpenFind
     };
 
-    enum { InvalidId = 0xFFFFFFFF };
+    static constexpr uint32_t InvalidId = 0xFFFFFFFF;
 
     struct MemPathData
     {
@@ -247,6 +254,7 @@ private:
     void Achieve( const char* id );
 
     bool DrawImpl();
+    void DrawFrameImage( FrameImageCache& cache, const FrameImage& fi, float scale = GetScale() );
     void DrawNotificationArea();
     bool DrawConnection();
     void DrawFrames();
@@ -289,7 +297,6 @@ private:
     void DrawSampleParents();
     void DrawRanges();
     void DrawRangeEntry( Range& range, const char* label, uint32_t color, const char* popupLabel, int id );
-    void DrawSourceTooltip( const char* filename, uint32_t line, int before = 3, int after = 3, bool separateTooltip = true );
     void DrawWaitStacks();
     void DrawManual();
     void DrawFlameGraph();
@@ -331,7 +338,6 @@ private:
 
     void AddAnnotation( int64_t start, int64_t end );
 
-    bool IsFrameExternal( const char* filename, const char* image );
     uint32_t GetThreadColor( uint64_t thread, int depth );
     uint32_t GetSrcLocColor( const SourceLocation& srcloc, int depth );
     uint32_t GetRawSrcLocColor( const SourceLocation& srcloc, int depth );
@@ -381,6 +387,7 @@ private:
 
     void SmallCallstackButton( const char* name, uint32_t callstack, int& idx, bool tooltip = true );
     void DrawCallstackCalls( uint32_t callstack, uint16_t limit ) const;
+    nlohmann::json GetCallstackJson( const VarArray<CallstackFrameId>& cs );
     void SetViewToLastFrames();
     int64_t GetZoneChildTime( const ZoneEvent& zone );
     int64_t GetZoneChildTime( const GpuEvent& zone );
@@ -497,9 +504,34 @@ private:
     DecayValue<const ZoneEvent*> m_zoneHover2 = nullptr;
     int m_frameHover = -1;
     bool m_messagesScrollBottom;
-    ImGuiTextFilter m_messageFilter;
+
+    struct MessageFilter
+    {
+        ImGuiTextFilter m_text;
+        bool m_showMessageSourceFilter[(size_t)MessageSourceType::COUNT];
+        bool m_showMessageSeverityFilter[(size_t)MessageSeverity::COUNT];
+
+        MessageFilter() { Clear(); }
+
+        void Clear()
+        {
+            m_text.Clear();
+            for( bool& show : m_showMessageSourceFilter ) show = true;
+            for( bool& show : m_showMessageSeverityFilter ) show = true;
+        }
+
+        bool PassFilter( const MessageData& msg, const Worker& worker ) const
+        {
+            return m_showMessageSourceFilter[(size_t)msg.source] 
+                && m_showMessageSeverityFilter[(size_t)msg.severity]
+                && m_text.PassFilter( worker.GetString( msg.ref ) );
+        }
+    };
+    MessageFilter m_messageFilter;
     bool m_showMessageImages = false;
     int m_visibleMessages = 0;
+    int m_messagesPerSeverity[(size_t)MessageSeverity::COUNT] = {};
+    int m_visibleMessagesPerSeverity[(size_t)MessageSeverity::COUNT] = {};
     size_t m_prevMessages = 0;
     bool m_messagesShowCallstack = false;
     Vector<uint32_t> m_msgList;
@@ -556,6 +588,7 @@ private:
     bool m_topInline = false;
     bool m_statShowAddress = false;
     bool m_statShowKernel = true;
+    bool m_statShowExternal = true;
     bool m_groupChildrenLocations = false;
     bool m_allocTimeRelativeToZone = true;
     bool m_ctxSwitchTimeRelativeToZone = true;
@@ -619,16 +652,13 @@ private:
     std::atomic<size_t> m_srcFileBytes { 0 };
     std::atomic<size_t> m_dstFileBytes { 0 };
 
-    ImTextureID m_frameTexture = 0;
-    const void* m_frameTexturePtr = nullptr;
-
-    ImTextureID m_frameTextureConn = 0;
-    const void* m_frameTextureConnPtr = nullptr;
+    FrameImageCache m_FrameTextureCache;
+    FrameImageCache m_FrameTextureCacheConnection;
 
     std::vector<std::unique_ptr<Annotation>> m_annotations;
     UserData m_userData;
 
-    bool m_wasActive = false;
+    alignas(64) std::atomic<bool> m_wasActive { false };
     bool m_reconnectRequested = false;
     bool m_firstFrame = true;
     std::chrono::time_point<std::chrono::high_resolution_clock> m_firstFrameTime;
@@ -651,7 +681,7 @@ private:
     int m_gpuIdx = 0;
 
     struct FindZone {
-        enum : uint64_t { Unselected = std::numeric_limits<uint64_t>::max() - 1 };
+        static constexpr uint64_t Unselected = std::numeric_limits<uint64_t>::max() - 1;
         enum class GroupBy : int { Thread, UserText, ZoneName, Callstack, Parent, NoGrouping };
         enum class SortBy : int { Order, Count, Time, Mtpc };
 
@@ -943,7 +973,7 @@ private:
     {
         uint64_t count = 0;
         uint64_t lastTime = 0;
-        RangeSlim range = {false, 0, 0};
+        RangeSlim range = {0, 0, false};
 
         void Reset()
         {
@@ -954,6 +984,9 @@ private:
 
 #ifndef __EMSCRIPTEN__
     TracyLlm m_llm;
+
+    unordered_flat_map<uint32_t, std::string> m_callstackDesc;
+    std::mutex m_callstackDescLock;
 #endif
 };
 

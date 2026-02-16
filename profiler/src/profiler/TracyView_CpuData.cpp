@@ -518,7 +518,7 @@ void View::DrawThreadMigrations( const TimelineContext& ctx, const int origOffse
 
                     DrawLine( draw, pw, startPos, wakecolor, wakeupLineSize );
                     draw->AddCircleFilled( pw, bgSize, wakecolor );
-                        
+
                     // Vertical line at beginning of thread to emphasize wakeup
                     if( wakeupWidthPixels >= 3 )
                     {
@@ -574,6 +574,8 @@ void View::DrawCpuDataWindow()
     ImGui::SetNextWindowSize( ImVec2( 700 * scale, 800 * scale ), ImGuiCond_FirstUseEver );
     ImGui::Begin( "CPU data", &m_showCpuDataWindow );
     if( ImGui::GetCurrentWindowRead()->SkipItems ) { ImGui::End(); return; }
+
+    Worker::ThreadCache cache;
 
     struct PidData
     {
@@ -808,7 +810,7 @@ void View::DrawCpuDataWindow()
                     ImGui::TableNextColumn();
                     if( drawSeparator ) ImGui::Separator();
 
-                    const auto tidMatch = pidMatch && m_worker.IsThreadLocal( tid );
+                    const auto tidMatch = pidMatch && m_worker.IsThreadLocal( tid, cache );
                     const char* tname;
                     if( tidMatch )
                     {

@@ -112,8 +112,6 @@ private:
         uint16_t regData[20];
     };
 
-    enum { AsmLineSize = sizeof( AsmLine ) };
-
     struct JumpData
     {
         uint64_t min;
@@ -183,7 +181,7 @@ private:
     void RenderSimpleSourceView();
     void RenderSymbolView( Worker& worker, View& view );
 
-    void RenderSymbolSourceView( const AddrStatData& as, Worker& worker, const View& view, bool hasInlines );
+    void RenderSymbolSourceView( const AddrStatData& as, Worker& worker, View& view, bool hasInlines );
     uint64_t RenderSymbolAsmView( const AddrStatData& as, Worker& worker, View& view );
 
     void RenderLine( const Tokenizer::Line& line, int lineNum, const AddrStat& ipcnt, const AddrStatData& as, Worker* worker, const View* view );
@@ -215,6 +213,8 @@ private:
 
     tracy_force_inline float CalcJumpSeparation( float scale );
     std::tuple<size_t, size_t> GetJumpRange( const JumpData& jump );
+
+    void AttachRangeToLlm( size_t start, size_t stop, Worker& worker, View& view, const AddrStatData& as );
 
 #ifndef TRACY_NO_FILESELECTOR
     void Save( const Worker& worker, size_t start = 0, size_t stop = std::numeric_limits<size_t>::max() );
