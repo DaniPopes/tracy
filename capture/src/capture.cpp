@@ -119,7 +119,7 @@ struct SrcLocEntry
     uint64_t lockCount;
 };
 
-static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries, uint64_t fileSize = 0, int64_t actualMemUsage = 0 )
+static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries )
 {
     uint64_t totalBytes = 0;
     for( auto& e : entries ) totalBytes += e.bytes;
@@ -141,21 +141,6 @@ static void PrintSizeTable( const char* title, std::vector<SizeEntry>& entries, 
     printf( "%-36s %16s %16s %8s\n", "------------------------------------", "----------------", "----------------", "--------" );
     printf( "%-36s %16s ", "Total (uncompressed est.)", "" );
     AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( totalBytes ) );
-    if( actualMemUsage > 0 )
-    {
-        printf( "%-36s %16s ", "Actual memory usage", "" );
-        AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( actualMemUsage ) );
-    }
-    if( fileSize > 0 )
-    {
-        printf( "%-36s %16s ", "Compressed file size", "" );
-        AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%16s\n", tracy::MemSizeToString( fileSize ) );
-        if( totalBytes > 0 )
-        {
-            printf( "%-36s %16s ", "Compression ratio", "" );
-            AnsiPrintf( ANSI_BOLD ANSI_YELLOW, "%15.1fx\n", (double)totalBytes / fileSize );
-        }
-    }
 }
 
 int AnalyzeTrace( const char* input, int topN )
@@ -290,7 +275,7 @@ int AnalyzeTrace( const char* input, int topN )
     entries.push_back( { "Source file cache", worker.GetSourceFileCacheCount(), worker.GetSourceFileCacheSize() } );
     entries.push_back( { "Strings (pointer map est.)", worker.GetStringsCount(), worker.GetStringsCount() * ( sizeof( uint64_t ) + sizeof( char* ) + 32 ) } );
 
-    PrintSizeTable( "Estimated Memory Usage by Category", entries, fileSize, actualMemUsage );
+    PrintSizeTable( "Estimated Memory Usage by Category", entries );
 
     AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Location Analysis ===\n" );
     printf( "Total source locations: %s (int16_t limit: 32,767)\n", tracy::RealToString( worker.GetSrcLocCount() ) );
