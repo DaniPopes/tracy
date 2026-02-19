@@ -170,7 +170,7 @@ int AnalyzeTrace( const char* input, int topN )
     printf( "Time span:      %s\n", tracy::TimeToString( lastTime - firstTime ) );
     printf( "File size:      %s (compressed on disk)\n", tracy::MemSizeToString( fileSize ) );
     printf( "Uncompressed:   %s (%.1fx ratio)\n", tracy::MemSizeToString( decompressedSize ), fileSize > 0 ? (double)decompressedSize / fileSize : 0.0 );
-    printf( "Memory usage:   %s (loaded)\n", tracy::MemSizeToString( actualMemUsage ) );
+    printf( "Memory usage:   %s (loaded, slab/vector only)\n", tracy::MemSizeToString( actualMemUsage ) );
     printf( "Zones:          %s\n", tracy::RealToString( worker.GetZoneCount() ) );
     printf( "GPU zones:      %s\n", tracy::RealToString( worker.GetGpuZoneCount() ) );
     printf( "Source locs:    %s\n", tracy::RealToString( worker.GetSrcLocCount() ) );
@@ -254,6 +254,12 @@ int AnalyzeTrace( const char* input, int topN )
         zoneChildrenCount * sizeof( tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>> ) +
         totalZoneChildEntries * sizeof( tracy::short_ptr<tracy::ZoneEvent> );
 
+    const auto callstackFrameCount = worker.GetCallstackFrameCount();
+    const auto callstackFrameInnerBytes = worker.GetCallstackFrameInnerSize();
+    const auto callstackPayloadCount = worker.GetCallstackPayloadCount();
+    const auto callstackPayloadInnerBytes = worker.GetCallstackPayloadInnerSize();
+    const auto hashMapSize = worker.GetHashMapSize();
+
     std::vector<SizeEntry> entries;
     entries.push_back( { "Zones (ZoneEvent)", zoneCount, zoneCount * sizeof( tracy::ZoneEvent ) } );
     entries.push_back( { "Zone extras (ZoneExtra)", zoneExtraCount, zoneExtraCount * sizeof( tracy::ZoneExtra ) } );
@@ -265,8 +271,9 @@ int AnalyzeTrace( const char* input, int topN )
     entries.push_back( { "Messages", messages.size(), messages.size() * sizeof( tracy::MessageData ) } );
     entries.push_back( { "Plot items", totalPlotItems, totalPlotItems * sizeof( tracy::PlotItem ) } );
     entries.push_back( { "Callstack samples", totalSamples, totalSamples * sizeof( tracy::SampleData ) } );
-    entries.push_back( { "Callstack payloads", worker.GetCallstackPayloadCount(), worker.GetCallstackPayloadCount() * 8 * 3 } );
-    entries.push_back( { "Callstack frames", worker.GetCallstackFrameCount(), worker.GetCallstackFrameCount() * sizeof( tracy::CallstackFrameData ) } );
+    entries.push_back( { "Callstack payloads", callstackPayloadCount, callstackPayloadInnerBytes } );
+    entries.push_back( { "Callstack frames", callstackFrameCount,
+        callstackFrameCount * sizeof( tracy::CallstackFrameData ) + callstackFrameInnerBytes } );
     entries.push_back( { "Frame events", totalFrameEvents, totalFrameEvents * sizeof( tracy::FrameEvent ) } );
     entries.push_back( { "Frame images (compressed)", frameImages.size(), totalFrameImageBytes } );
     entries.push_back( { "Source locations", worker.GetSrcLocCount(), worker.GetSrcLocCount() * sizeof( tracy::SourceLocation ) } );
@@ -276,6 +283,11 @@ int AnalyzeTrace( const char* input, int topN )
     entries.push_back( { "Strings (pointer map est.)", worker.GetStringsCount(), worker.GetStringsCount() * ( sizeof( uint64_t ) + sizeof( char* ) + 32 ) } );
 
     PrintSizeTable( "Estimated Memory Usage by Category", entries );
+
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Memory Summary ===\n" );
+    printf( "Slab/vector allocs:  %s\n", tracy::MemSizeToString( actualMemUsage ) );
+    printf( "Hash map allocs:     %s\n", tracy::MemSizeToString( hashMapSize ) );
+    printf( "Total memory:        %s\n", tracy::MemSizeToString( actualMemUsage + hashMapSize ) );
 
     AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Location Analysis ===\n" );
     printf( "Total source locations: %s (int16_t limit: 32,767)\n", tracy::RealToString( worker.GetSrcLocCount() ) );

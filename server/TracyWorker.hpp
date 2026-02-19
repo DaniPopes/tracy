@@ -569,6 +569,9 @@ public:
     const unordered_flat_map<const char*, MemoryBlock, charutil::Hasher, charutil::Comparator>& GetSourceFileCache() const { return m_data.sourceFileCache; }
     uint64_t GetSourceFileCacheCount() const { return m_data.sourceFileCache.size(); }
     uint64_t GetSourceFileCacheSize() const;
+    uint64_t GetHashMapSize() const;
+    uint64_t GetCallstackFrameInnerSize() const;
+    uint64_t GetCallstackPayloadInnerSize() const;
     MemoryBlock GetSourceFileFromCache( const char* file ) const;
     HwSampleData* GetHwSampleData( uint64_t addr );
 

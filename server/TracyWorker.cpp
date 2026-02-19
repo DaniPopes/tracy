@@ -8728,6 +8728,95 @@ uint64_t Worker::GetSourceFileCacheSize() const
     return cnt;
 }
 
+namespace detail {
+
+template<typename Map>
+static uint64_t RobinHoodBytes( const Map& map )
+{
+    if( map.mask() == 0 ) return 0;
+    const auto numElementsWithBuffer = map.calcNumElementsWithBuffer( map.mask() + 1 );
+    return map.calcNumBytesTotal( numElementsWithBuffer );
+}
+
+}
+
+uint64_t Worker::GetHashMapSize() const
+{
+    uint64_t total = 0;
+    total += detail::RobinHoodBytes( m_data.strings );
+    total += detail::RobinHoodBytes( m_data.stringMap );
+    total += detail::RobinHoodBytes( m_data.threadNames );
+    total += detail::RobinHoodBytes( m_data.externalNames );
+    total += detail::RobinHoodBytes( m_data.sourceLocation );
+    total += detail::RobinHoodBytes( m_data.sourceLocationPayloadMap );
+#ifndef TRACY_NO_STATISTICS
+    total += detail::RobinHoodBytes( m_data.sourceLocationZones );
+    total += detail::RobinHoodBytes( m_data.gpuSourceLocationZones );
+#else
+    total += detail::RobinHoodBytes( m_data.sourceLocationZonesCnt );
+    total += detail::RobinHoodBytes( m_data.gpuSourceLocationZonesCnt );
+#endif
+    total += detail::RobinHoodBytes( m_data.callstackMap );
+    total += detail::RobinHoodBytes( m_data.callstackFrameMap );
+    total += detail::RobinHoodBytes( m_data.revFrameMap );
+    total += detail::RobinHoodBytes( m_data.symbolMap );
+    total += detail::RobinHoodBytes( m_data.symbolStats );
+    total += detail::RobinHoodBytes( m_data.codeSymbolMap );
+#ifndef TRACY_NO_STATISTICS
+    total += detail::RobinHoodBytes( m_data.parentCallstackMap );
+    total += detail::RobinHoodBytes( m_data.parentCallstackFrameMap );
+    total += detail::RobinHoodBytes( m_data.revParentFrameMap );
+    total += detail::RobinHoodBytes( m_data.postponedSamples );
+    total += detail::RobinHoodBytes( m_data.pendingInstructionPointers );
+    for( auto& v : m_data.instructionPointersMap ) total += detail::RobinHoodBytes( v.second );
+    total += detail::RobinHoodBytes( m_data.instructionPointersMap );
+    for( auto& v : m_data.symbolSamples ) total += v.second.size() * sizeof( SampleDataRange );
+    total += detail::RobinHoodBytes( m_data.symbolSamples );
+    total += detail::RobinHoodBytes( m_data.pendingSymbolSamples );
+    for( auto& v : m_data.childSamples ) total += v.second.size() * sizeof( ChildSample );
+    total += detail::RobinHoodBytes( m_data.childSamples );
+    total += detail::RobinHoodBytes( m_data.ghostFramesMap );
+#endif
+    total += detail::RobinHoodBytes( m_data.lockMap );
+    total += detail::RobinHoodBytes( m_data.ctxSwitch );
+    total += detail::RobinHoodBytes( m_data.tidToPid );
+    total += detail::RobinHoodBytes( m_data.cpuThreadData );
+    total += detail::RobinHoodBytes( m_data.cpuTopologyMap );
+    total += detail::RobinHoodBytes( m_data.symbolCode );
+    total += detail::RobinHoodBytes( m_data.sourceFileCache );
+    total += detail::RobinHoodBytes( m_data.hwSamples );
+    total += detail::RobinHoodBytes( m_data.fiberToThreadMap );
+    total += detail::RobinHoodBytes( m_data.memNameMap );
+
+    for( auto& lm : m_data.lockMap )
+    {
+        total += detail::RobinHoodBytes( lm.second->threadMap );
+    }
+
+    return total;
+}
+
+uint64_t Worker::GetCallstackFrameInnerSize() const
+{
+    uint64_t total = 0;
+    for( auto& v : m_data.callstackFrameMap )
+    {
+        if( v.second ) total += v.second->size * sizeof( CallstackFrame );
+    }
+    return total;
+}
+
+uint64_t Worker::GetCallstackPayloadInnerSize() const
+{
+    uint64_t total = 0;
+    for( size_t i = 1; i < m_data.callstackPayload.size(); i++ )
+    {
+        auto& payload = *m_data.callstackPayload[i];
+        total += sizeof( VarArray<CallstackFrameId> ) + payload.size() * sizeof( CallstackFrameId );
+    }
+    return total;
+}
+
 Worker::MemoryBlock Worker::GetSourceFileFromCache( const char* file ) const
 {
     auto it = m_data.sourceFileCache.find( file );
