@@ -29,6 +29,7 @@ constexpr size_t InputBufferSize = 1024;
 TracyLlm::TracyLlm( Worker& worker, View& view, const TracyManualData& manual )
     : m_exit( false )
     , m_input( nullptr )
+    , m_apiInput( nullptr )
     , m_worker( worker )
 {
     if( !s_config.llm ) return;
@@ -570,9 +571,12 @@ void TracyLlm::Draw()
                 }
 
                 m_chat.erase( it, m_chat.end() );
-                m_jobsLock.lock();
-                if( m_currentJob ) m_currentJob->stop = true;
-                m_jobsLock.unlock();
+                if( role == TracyLlmChat::TurnRole::User )
+                {
+                    m_jobsLock.lock();
+                    if( m_currentJob ) m_currentJob->stop = true;
+                    m_jobsLock.unlock();
+                }
                 ImGui::PopID();
                 break;
             }
