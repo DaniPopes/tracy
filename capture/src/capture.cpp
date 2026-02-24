@@ -248,8 +248,6 @@ int AnalyzeTrace( const char* input, int topN )
     {
         totalZoneChildEntries += zoneChildrenVecs[i].size();
     }
-    // Each children vector: sizeof(Vector<short_ptr<ZoneEvent>>) header in the outer vector.
-    // Each child entry: sizeof(short_ptr<ZoneEvent>) in the heap-allocated inner array.
     uint64_t zoneChildrenBytes =
         zoneChildrenCount * sizeof( tracy::Vector<tracy::short_ptr<tracy::ZoneEvent>> ) +
         totalZoneChildEntries * sizeof( tracy::short_ptr<tracy::ZoneEvent> );
@@ -260,14 +258,35 @@ int AnalyzeTrace( const char* input, int topN )
     const auto callstackPayloadInnerBytes = worker.GetCallstackPayloadInnerSize();
     const auto hashMapSize = worker.GetHashMapSize();
 
+    uint64_t totalCtxSwitchPerCpu = worker.GetContextSwitchPerCpuCount();
+
+    uint64_t threadStackCountBytes = threads.size() * 64 * 1024;
+
+    uint64_t totalMemFrees = 0;
+    uint64_t totalMemActive = 0;
+    for( auto& mn : worker.GetMemNameMap() )
+    {
+        totalMemFrees += mn.second->frees.size();
+        totalMemActive += mn.second->active.size();
+    }
+
+    uint64_t totalCtxSwitchSamples = 0;
+    for( auto& td : threads )
+    {
+        totalCtxSwitchSamples += td->ctxSwitchSamples.size();
+    }
+
     std::vector<SizeEntry> entries;
     entries.push_back( { "Zones (ZoneEvent)", zoneCount, zoneCount * sizeof( tracy::ZoneEvent ) } );
     entries.push_back( { "Zone extras (ZoneExtra)", zoneExtraCount, zoneExtraCount * sizeof( tracy::ZoneExtra ) } );
     entries.push_back( { "Zone children vectors", zoneChildrenCount, zoneChildrenBytes } );
     entries.push_back( { "GPU zones (GpuEvent)", gpuZoneCount, gpuZoneCount * sizeof( tracy::GpuEvent ) } );
-    entries.push_back( { "Context switches", totalCtxSwitch, totalCtxSwitch * sizeof( tracy::ContextSwitchData ) } );
+    entries.push_back( { "Context switches (per-thread)", totalCtxSwitch, totalCtxSwitch * sizeof( tracy::ContextSwitchData ) } );
+    entries.push_back( { "Context switches (per-CPU)", totalCtxSwitchPerCpu, totalCtxSwitchPerCpu * sizeof( tracy::ContextSwitchCpu ) } );
+    entries.push_back( { "Ctx switch samples (dupes)", totalCtxSwitchSamples, totalCtxSwitchSamples * sizeof( tracy::SampleData ) } );
     entries.push_back( { "Lock events (LockEventPtr)", totalLockEvents, totalLockEvents * sizeof( tracy::LockEventPtr ) } );
     entries.push_back( { "Memory events (MemEvent)", totalMemEvents, totalMemEvents * sizeof( tracy::MemEvent ) } );
+    entries.push_back( { "Memory frees index", totalMemFrees, totalMemFrees * sizeof( uint32_t ) } );
     entries.push_back( { "Messages", messages.size(), messages.size() * sizeof( tracy::MessageData ) } );
     entries.push_back( { "Plot items", totalPlotItems, totalPlotItems * sizeof( tracy::PlotItem ) } );
     entries.push_back( { "Callstack samples", totalSamples, totalSamples * sizeof( tracy::SampleData ) } );
@@ -281,13 +300,84 @@ int AnalyzeTrace( const char* input, int topN )
     entries.push_back( { "Symbol code", worker.GetSymbolCodeCount(), worker.GetSymbolCodeSize() } );
     entries.push_back( { "Source file cache", worker.GetSourceFileCacheCount(), worker.GetSourceFileCacheSize() } );
     entries.push_back( { "Strings (pointer map est.)", worker.GetStringsCount(), worker.GetStringsCount() * ( sizeof( uint64_t ) + sizeof( char* ) + 32 ) } );
+    entries.push_back( { "Thread stackCount arrays", threads.size(), threadStackCountBytes } );
 
     PrintSizeTable( "Estimated Memory Usage by Category", entries );
 
+    uint64_t categoryTotal = 0;
+    for( auto& e : entries ) categoryTotal += e.bytes;
+
     AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Memory Summary ===\n" );
-    printf( "Slab/vector allocs:  %s\n", tracy::MemSizeToString( actualMemUsage ) );
-    printf( "Hash map allocs:     %s\n", tracy::MemSizeToString( hashMapSize ) );
-    printf( "Total memory:        %s\n", tracy::MemSizeToString( actualMemUsage + hashMapSize ) );
+    printf( "Slab/vector allocs:  %s  (tracked by memUsage)\n", tracy::MemSizeToString( actualMemUsage ) );
+    printf( "Hash map allocs:     %s  (robin_hood, untracked)\n", tracy::MemSizeToString( hashMapSize ) );
+    uint64_t totalTracked = actualMemUsage + hashMapSize;
+    printf( "Total tracked:       %s\n", tracy::MemSizeToString( totalTracked ) );
+    printf( "Category estimates:  %s\n", tracy::MemSizeToString( categoryTotal ) );
+    if( totalTracked > categoryTotal )
+    {
+        uint64_t gap = totalTracked - categoryTotal;
+        printf( "Unaccounted:         %s  (slab fragmentation, overhead)\n", tracy::MemSizeToString( gap ) );
+    }
+
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Callstack Analysis ===\n" );
+    {
+        uint64_t totalFrameEntries = 0;
+        for( size_t i = 1; i < callstackPayloadCount + 1; i++ )
+        {
+            totalFrameEntries += worker.GetCallstack( i ).size();
+        }
+        printf( "Unique callstack payloads:  %s\n", tracy::RealToString( callstackPayloadCount ) );
+        printf( "Total frame IDs in payloads: %s\n", tracy::RealToString( totalFrameEntries ) );
+        if( callstackPayloadCount > 0 )
+            printf( "Avg callstack depth:       %.1f frames\n", (double)totalFrameEntries / callstackPayloadCount );
+        printf( "Unique resolved addresses: %s\n", tracy::RealToString( callstackFrameCount ) );
+
+        auto& frameMap = const_cast<tracy::Worker&>( worker ).GetCallstackFrameMap();
+        uint64_t totalInlineFrames = 0;
+        uint32_t maxInline = 0;
+        std::unordered_map<std::string, uint64_t> imageCounts;
+        for( auto& [id, data] : frameMap )
+        {
+            if( !data ) continue;
+            totalInlineFrames += data->size;
+            if( data->size > maxInline ) maxInline = data->size;
+            if( data->imageName.Active() )
+            {
+                imageCounts[worker.GetString( data->imageName )]++;
+            }
+        }
+        printf( "Total sub-frames (inlines):%s\n", tracy::RealToString( totalInlineFrames ) );
+        if( callstackFrameCount > 0 )
+            printf( "Avg inline expansion:      %.2f sub-frames per address\n", (double)totalInlineFrames / callstackFrameCount );
+        printf( "Max inline depth:          %u\n", maxInline );
+        printf( "CallstackFrame inner data: %s\n", tracy::MemSizeToString( callstackFrameInnerBytes ) );
+        printf( "Symbols resolved:          %s\n", tracy::RealToString( worker.GetSymbolsCount() ) );
+
+        if( !imageCounts.empty() )
+        {
+            std::vector<std::pair<std::string, uint64_t>> imageList( imageCounts.begin(), imageCounts.end() );
+            std::sort( imageList.begin(), imageList.end(), []( const auto& a, const auto& b ) { return a.second > b.second; } );
+
+            printf( "\nResolved addresses by image:\n" );
+            printf( "%-70s %10s\n", "Image", "Addresses" );
+            printf( "%-70s %10s\n", "----------------------------------------------------------------------", "----------" );
+            int shown = std::min( (int)imageList.size(), 20 );
+            for( int i = 0; i < shown; i++ )
+            {
+                const char* name = imageList[i].first.c_str();
+                char buf[71];
+                size_t len = strlen( name );
+                if( len > 70 )
+                {
+                    snprintf( buf, sizeof( buf ), "...%s", name + len - 67 );
+                    name = buf;
+                }
+                printf( "%-70s %10s\n", name, tracy::RealToString( imageList[i].second ) );
+            }
+            if( (int)imageList.size() > shown )
+                printf( "... and %s more images\n", tracy::RealToString( imageList.size() - shown ) );
+        }
+    }
 
     AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Source Location Analysis ===\n" );
     printf( "Total source locations: %s (int16_t limit: 32,767)\n", tracy::RealToString( worker.GetSrcLocCount() ) );
@@ -398,6 +488,55 @@ int AnalyzeTrace( const char* input, int topN )
     if( (int)fileList.size() > fileShown )
     {
         printf( "... and %s more files\n", tracy::RealToString( fileList.size() - fileShown ) );
+    }
+
+    AnsiPrintf( ANSI_BOLD ANSI_CYAN, "\n=== Size Reduction Recommendations ===\n" );
+    printf( "Runtime env vars (set on profiled application, no recompile needed):\n" );
+    if( totalSamples > 0 )
+    {
+        printf( "  TRACY_NO_SAMPLING=1        Disable CPU sampling (%s samples, ~%s)\n",
+            tracy::RealToString( totalSamples ), tracy::MemSizeToString( totalSamples * sizeof( tracy::SampleData ) ) );
+        printf( "  TRACY_SAMPLING_HZ=N        Lower sampling frequency (default: 8000 Hz)\n" );
+    }
+    if( totalCtxSwitch > 0 )
+    {
+        printf( "  TRACY_NO_CONTEXT_SWITCH=1  Disable context switches (%s events, ~%s)\n",
+            tracy::RealToString( totalCtxSwitch ), tracy::MemSizeToString( totalCtxSwitch * sizeof( tracy::ContextSwitchData ) ) );
+    }
+    if( totalSamples > 0 || totalCtxSwitch > 0 )
+    {
+        printf( "  TRACY_NO_SYS_TRACE=1       Disable all system tracing (sampling + ctx switch)\n" );
+    }
+    if( worker.GetSymbolsCount() > 0 )
+    {
+        printf( "  TRACY_SYMBOL_OFFLINE_RESOLVE=1  Skip runtime symbol resolution\n" );
+        printf( "    (use `tracy-update -r` afterward to resolve; no benefit with same-machine capture)\n" );
+    }
+
+    printf( "\nCompile-time macros (define when building the profiled application):\n" );
+    printf( "  TRACY_ON_DEMAND            Only capture when server is connected\n" );
+    if( callstackPayloadCount > 0 )
+    {
+        printf( "  TRACY_NO_CALLSTACK         Disable all callstack collection (~%s)\n",
+            tracy::MemSizeToString( callstackPayloadInnerBytes + callstackFrameInnerBytes ) );
+        printf( "  TRACY_CALLSTACK=N          Limit callstack depth (lower = smaller payloads)\n" );
+    }
+    if( worker.GetSourceFileCacheCount() > 0 || worker.GetSymbolCodeCount() > 0 )
+    {
+        printf( "  TRACY_NO_CODE_TRANSFER     Disable source/symbol code transfer (~%s)\n",
+            tracy::MemSizeToString( worker.GetSourceFileCacheSize() + worker.GetSymbolCodeSize() ) );
+    }
+    printf( "  TRACY_NO_FRAME_IMAGE       Disable frame image capture\n" );
+    printf( "  TRACY_NO_VSYNC_CAPTURE     Disable vsync event capture\n" );
+
+    if( totalSamples > 0 && totalCtxSwitch > 0 )
+    {
+        uint64_t sysTraceBytes = totalSamples * sizeof( tracy::SampleData ) + totalCtxSwitch * sizeof( tracy::ContextSwitchData )
+            + totalCtxSwitchPerCpu * sizeof( tracy::ContextSwitchCpu ) + totalCtxSwitchSamples * sizeof( tracy::SampleData );
+        printf( "\n" );
+        AnsiPrintf( ANSI_YELLOW ANSI_BOLD, "Biggest win: " );
+        printf( "Disabling system tracing would save ~%s (%.0f%% of categories)\n",
+            tracy::MemSizeToString( sysTraceBytes ), categoryTotal > 0 ? 100.0 * sysTraceBytes / categoryTotal : 0.0 );
     }
 
     printf( "\n" );
